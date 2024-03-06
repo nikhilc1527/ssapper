@@ -1,0 +1,17 @@
+; Options: -q --produce-models --incremental --print-success --lang smt2.5
+(declare-fun start!2810 () Bool)
+
+(assert start!2810)
+
+(declare-fun n!228 () (_ BitVec 100))
+
+(assert (=> start!2810 (and (= (bvand n!228 n!228) n!228) (not (= (bvand n!228 #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000) #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)))))
+
+(assert (=> start!2810 true))
+
+(push 1)
+
+(check-sat)
+
+(pop 1)
+

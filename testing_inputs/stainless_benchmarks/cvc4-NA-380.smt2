@@ -1,0 +1,17 @@
+; Options: -q --produce-models --incremental --print-success --lang smt2.5
+(declare-fun start!2776 () Bool)
+
+(assert start!2776)
+
+(declare-fun n!221 () (_ BitVec 100))
+
+(assert (=> start!2776 (and (= (bvand n!221 n!221) n!221) (not (= (bvand n!221 #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000) #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000)))))
+
+(assert (=> start!2776 true))
+
+(push 1)
+
+(check-sat)
+
+(pop 1)
+

@@ -1,0 +1,17 @@
+; Options: -q --produce-models --incremental --print-success --lang smt2.5
+(declare-fun start!2794 () Bool)
+
+(assert start!2794)
+
+(declare-fun n!226 () (_ BitVec 100))
+
+(assert (=> start!2794 (not (= (bvlshr n!226 #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001) (bvudiv n!226 #b0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010)))))
+
+(assert (=> start!2794 true))
+
+(push 1)
+
+(check-sat)
+
+(pop 1)
+

@@ -1,0 +1,13 @@
+; Options: -q --produce-models --incremental --print-success --lang smt2.5
+(declare-fun start!14324 () Bool)
+
+(assert start!14324)
+
+(assert (=> start!14324 false))
+
+(push 1)
+
+(check-sat)
+
+(pop 1)
+
