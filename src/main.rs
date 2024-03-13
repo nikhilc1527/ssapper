@@ -1,11 +1,49 @@
 use std::{env, io::stdin, time::Instant};
 
 extern crate smtlib;
+extern crate peg;
 
+use peg::str::LineCol;
 use smtlib::{conf::SolverCmd, proc::SmtProc, sexp::{Sexp, Atom}};
 
-fn handle_sexp(sexp_str: &str, linenum: usize, running_line: usize) {
-    println!("{}\nline {}-{}", sexp_str, running_line, linenum);
+fn is_checksat(sexp: &Sexp) -> bool {
+    let Sexp::List(list) = sexp
+    else {return false};
+
+    if list.len() != 1 { return false }
+    let x = &list[0];
+
+    let Sexp::Atom(y) = x
+    else {return false};
+
+    let Atom::S(s) = y
+    else {return false};
+
+    s == "check-sat"
+}
+
+fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize
+               , procs: &mut [SmtProc]) -> Result<(), peg::error::ParseError<LineCol>> {
+    // println!("{}\nline {}-{}", sexp_str, _running_line, linenum);
+
+    let sexp = smtlib::sexp::parse(sexp_str)?;
+
+    let check_sat = is_checksat(&sexp);
+
+    if check_sat {
+        for p in procs.iter_mut() {
+            let start = Instant::now();
+            p.send(&sexp);
+            let duration = start.elapsed();
+            println!("line {} check-sat took {:?}", linenum, duration);
+        }
+    } else {
+        for p in procs.iter_mut() {
+            p.send(&sexp);
+        }            
+    }
+
+    Ok(())
 }
 
 fn main() {
@@ -32,14 +70,12 @@ fn main() {
         }
     }
 
-    let n_solvers = solvers.len();
-
     let mut procs: Vec<SmtProc> = Vec::new();
 
-    for i in 0..n_solvers {
-        let split: Vec<&str> = solvers[i].split(" ").collect();
+    for solver in &solvers {
+        let split: Vec<&str> = solver.split(' ').collect();
 
-        let cmd: SolverCmd = SolverCmd {
+        let cmd = SolverCmd {
             cmd: split[0].to_string(),
             args: split[1..split.len()].iter().map(|s| s.to_string()).collect(),
             options: vec![]
@@ -47,12 +83,9 @@ fn main() {
         // running commands straight from user input, (possible) security vulnerability
         // also assuming that input of command is well-formed
         // TODO: fix security vulnerability (or dont care)
-        procs.push(SmtProc::new(cmd, None).expect(&format!("failed to run solver {}", &solvers[i])));
+
+        procs.push(SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
     }
-
-    struct Line (i64, Sexp);
-
-    let mut sexps: Vec<Line> = Vec::new();
 
     {
         let mut linenum = 0;
@@ -67,9 +100,8 @@ fn main() {
 
             running.push_str(&line);
 
-            let mut line_i = 0;
             let mut handled = false;
-            for c in line.chars() {
+            for (line_i, c) in line.chars().enumerate() {
                 let ind = running.len() - (line.len() - line_i);
                 if c == '(' {
                     par_balance += 1;
@@ -80,52 +112,24 @@ fn main() {
                     line_has_stuff = true;
                 }
                 if c == ';' {
-                    running = running[..=ind].to_string();
+                    running = running[..ind].to_string();
                     break;
                 }
 
                 if line_has_stuff && par_balance == 0 {
                     line_has_stuff = false;
-                    handle_sexp(&running[..=ind], linenum, running_line);
+                    let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs);
+                    match res {
+                        Ok(()) => (),
+                        Err(e) => println!("parse error on line {}-{}\n{}\n {:?}", running_line, linenum, &running[..=ind], e),
+                    }
                     running = running[ind+1..].to_string();
                     handled = true;
                 }
-
-                line_i += 1;
             }
             if handled {
                 running_line = linenum + 1;
             }
-        }
-    }
-
-    for Line(linenum, sexp) in &sexps {
-        let mut check_sat = false;
-
-        if let Sexp::List(list) = sexp {
-            if list.len() == 1 {
-                let x = &list[0];
-                if let Sexp::Atom(y) = x {
-                    if let Atom::S(s) = y {
-                        if s == "check-sat" {
-                            check_sat = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        if check_sat {
-            for p in &mut procs {
-                let start = Instant::now();
-                p.send(sexp);
-                let duration = start.elapsed();
-                println!("line {} check-sat took {:?}", linenum, duration);
-            }
-        } else {
-            for p in &mut procs {
-                p.send(sexp);
-            }            
         }
     }
 }

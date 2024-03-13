@@ -7,7 +7,10 @@ edition.workspace = true
 eyre = "0.6.8"
 nix = { version = "0.26.2", default-features = false, features = ["resource", "process", "signal"] }
 thiserror = "1.0.40"
-peg = "0.8.1"
+
+# matching dependency with root crate
+peg = "0.8.2"
+
 serde = { version = "1.0.164", features = ["derive"] }
 serde_derive = "1.0.164"
 

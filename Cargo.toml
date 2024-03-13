@@ -14,3 +14,4 @@ version.edition = true
 
 [dependencies]
 smtlib = { path = "./smtlib" }
+peg = "0.8.1"
