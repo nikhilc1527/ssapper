@@ -111,7 +111,7 @@ fn main() {
                     par_balance -= 1;
                     line_has_stuff = true;
                 }
-                if c == ';' {
+                if c == ';' { // TODO: running_line doesnt update on comment lines
                     running = running[..ind].to_string();
                     break;
                 }
