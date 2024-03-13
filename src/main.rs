@@ -4,10 +4,19 @@ extern crate smtlib;
 
 use smtlib::{conf::SolverCmd, proc::SmtProc, sexp::{Sexp, Atom}};
 
+fn handle_sexp(sexp_str: &str, linenum: usize, running_line: usize) {
+    println!("{}\nline {}-{}", sexp_str, running_line, linenum);
+}
+
 fn main() {
+    // let l = smtlib::sexp::parse("\n  \n \n(check-sat) \n  ");
+    // println!("{:?}", l);
+    // return;
+
+    // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
-    { // maybe change to some established cmdline args parser at some point
+    { // TODO: maybe change to some established cmdline args parser at some point
         let mut i = 1;
         while i < args.len() {
             if args[i] == "-s" || args[i] == "--solver" {
@@ -37,6 +46,7 @@ fn main() {
         };
         // running commands straight from user input, (possible) security vulnerability
         // also assuming that input of command is well-formed
+        // TODO: fix security vulnerability (or dont care)
         procs.push(SmtProc::new(cmd, None).expect(&format!("failed to run solver {}", &solvers[i])));
     }
 
@@ -46,21 +56,45 @@ fn main() {
 
     {
         let mut linenum = 0;
+        let mut running: String = "".to_string();
+        let mut running_line = 1;
+        let mut par_balance = 0;
+        let mut line_has_stuff = false;
         for line in stdin().lines() {
             linenum += 1;
-            let // mut
-                line = line.unwrap();
-            // line.push('\n'); // in order for the parser to not fail
 
-            let sexp = smtlib::sexp::parse(&line);
-            // parser fails on (at least) following cases:
-            // empty line ""
-            // sexp with comment after it "(check-sat) ;; checking sat"
-            // comment line without trailing newline
+            let line = line.unwrap();
 
-            match sexp {
-                Ok(sexp) => sexps.push(Line(linenum, sexp)),
-                Err(_e) => println!("error parsing line# {}: {}, {}", linenum, line, _e),
+            running.push_str(&line);
+
+            let mut line_i = 0;
+            let mut handled = false;
+            for c in line.chars() {
+                let ind = running.len() - (line.len() - line_i);
+                if c == '(' {
+                    par_balance += 1;
+                    line_has_stuff = true;
+                }
+                if c == ')' {
+                    par_balance -= 1;
+                    line_has_stuff = true;
+                }
+                if c == ';' {
+                    running = running[..=ind].to_string();
+                    break;
+                }
+
+                if line_has_stuff && par_balance == 0 {
+                    line_has_stuff = false;
+                    handle_sexp(&running[..=ind], linenum, running_line);
+                    running = running[ind+1..].to_string();
+                    handled = true;
+                }
+
+                line_i += 1;
+            }
+            if handled {
+                running_line = linenum + 1;
             }
         }
     }
