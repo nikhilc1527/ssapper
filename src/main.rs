@@ -265,7 +265,11 @@ fn main() {
                             format!("{}-{}", running_line, linenum)
                         };
 
-                        let s = format!("parse error on line {}:", ls).red();
+                        let s = if let Some(infilename) = infilename {
+                            format!("input file {}:\nparse error on line {}:", infilename, ls).red()
+                        } else {
+                            format!("parse error on line {}:", ls).red()
+                        };
                         println!("{}\n{:?}", s, e);
                         exit(1);
                     }
