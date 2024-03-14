@@ -7,7 +7,7 @@ extern crate rayon;
 use peg::str::LineCol;
 use rayon::prelude::*;
 use rayon::iter::IntoParallelRefMutIterator;
-use smtlib::{conf::SolverCmd, proc::{SmtProc, SolverError}, sexp::{Sexp, Atom}};
+use smtlib::{conf::SolverCmd, proc::SmtProc, sexp::{Sexp, Atom}};
 
 fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp
@@ -27,9 +27,9 @@ fn is_response_needed(sexp: &Sexp) -> bool {
 
 #[derive(Debug)]
 struct Status (
-    usize,
-    Duration,
-    String,
+    usize, // index of solver
+    Duration, // duration that solver took to solve
+    String, // response (in case of check-sat, get-model, etc)
 );
 
 fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
@@ -40,8 +40,9 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
         // dont know if that is because of actual computation time or IO time
         // need more testing data to figure that out
 
+        // bug: input of handmade in2 in3 in4 reporting error after check-sat
+
         let start = Instant::now();
-        // println!("sending {:?}", sexp);
         p.send(sexp);
         let res = if get_resp {
             p.get_response(|s| s.to_string()).unwrap()
