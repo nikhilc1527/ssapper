@@ -1,7 +1,5 @@
 #!/bin/sh
 
-set -xe
-
 cargo build
 
 ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < ./testing_inputs/handmade/in1
@@ -11,7 +9,8 @@ cargo build
 # '!' is not handled by parser
 # cargo run -- -s z3\ -in < ./testing_inputs/handmade/in4
 
-# for f in testing_inputs/stainless_benchmarks/*;
-# do
-#     ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < $f
-# done
+for f in testing_inputs/stainless_benchmarks/*;
+do
+    echo $f
+    ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < $f
+done

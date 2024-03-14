@@ -94,6 +94,9 @@ pub enum SolverError {
     /// Solver killed specifically by SIGKILL signal
     #[error("solver was killed")]
     Killed,
+    /// empty output
+    #[error("empty output")]
+    EmptyOutput
 }
 
 type Result<T> = std::result::Result<T, SolverError>;
@@ -339,6 +342,9 @@ impl SmtProc {
             let n = self.stdout.read_line(&mut buf)?;
             if n == 0 {
                 self.check_killed()?;
+                if buf.len() == 0 {
+                    return Err(SolverError::EmptyOutput);
+                }
                 let msg = Self::parse_error(&buf);
                 return Err(SolverError::UnexpectedClose(msg));
             }

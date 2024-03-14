@@ -1,13 +1,15 @@
-use std::{env, io::stdin, time::{Instant, Duration}, fmt::Debug, sync::Mutex};
+use std::{env, io::stdin, time::{Instant, Duration}, fmt::Debug, sync::Mutex, path::Path, process::exit};
 
 extern crate smtlib;
 extern crate peg;
 extern crate rayon;
+extern crate colored;
 
+use colored::Colorize;
 use peg::str::LineCol;
 use rayon::prelude::*;
 use rayon::iter::IntoParallelRefMutIterator;
-use smtlib::{conf::SolverCmd, proc::SmtProc, sexp::{Sexp, Atom}};
+use smtlib::{conf::SolverCmd, proc::{SmtProc, SolverError}, sexp::{Sexp, Atom}};
 
 fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp
@@ -40,13 +42,25 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
         // dont know if that is because of actual computation time or IO time
         // need more testing data to figure that out
 
-        // bug: input of handmade in2 in3 in4 reporting error after check-sat
-
         let start = Instant::now();
+        // begin timing
+        
         p.send(sexp);
         let res = if get_resp {
             p.get_response(|s| s.to_string()).unwrap()
-        } else { "".to_string() };
+        } else {
+            let r = p.get_response(|s| s.to_string());
+            match r {
+                Ok(_) => (),
+                Err(SolverError::UnexpectedClose(msg)) => {
+                    println!("{:?}", msg);
+                }
+                Err(_) => ()
+            }
+            "".to_string()
+        };
+
+        // end timing
         let duration = start.elapsed();
 
         let mut rl = responses.lock().unwrap();
@@ -109,7 +123,8 @@ fn main() {
         // also assuming that input of command is well-formed
         // TODO: fix security vulnerability (or dont care)
 
-        procs.push(SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
+        let tee_path = Some(Path::new("./tee_out"));
+        procs.push(SmtProc::new(cmd, tee_path).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
     }
 
     {
@@ -126,7 +141,6 @@ fn main() {
             running.push_str(&line);
 
             for (line_i, c) in line.chars().enumerate() {
-                let ind = running.len() - (line.len() - line_i);
                 if c == '(' {
                     par_balance += 1;
                     if par_balance == 1 {
@@ -138,6 +152,8 @@ fn main() {
                     par_balance -= 1;
                     line_has_stuff = true;
                 }
+
+                let ind = running.len() - (line.len() - line_i);
                 if c == ';' {
                     running = running[..ind].to_string();
                     break;
@@ -148,7 +164,16 @@ fn main() {
                     let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs);
                     match res {
                         Ok(()) => (),
-                        Err(e) => println!("parse error on line {}-{}\n{}\n {:?}", running_line, linenum, &running[..=ind], e),
+                        // exit program when we get parse error, since rest of the program is invalid
+                        Err(e) => {
+                            let ls =
+                                if running_line == linenum {linenum.to_string()}
+                            else {format!("{}-{}", running_line, linenum)};
+
+                            let s = format!("parse error on line {}:", ls).red();
+                            println!("{}\n{:?}", s, e);
+                            exit(1);
+                        }
                     }
                     running = running[ind+1..].to_string();
                 }
