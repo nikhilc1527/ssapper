@@ -314,6 +314,8 @@ impl SmtProc {
     /// Low-level mechanism to get a response. Note that this needs to be issued
     /// after each query that returns a response, since it sends a marker and
     /// waits for the solver to reach that marker.
+    // CHANGED
+    pub
     fn get_response<F, T>(&mut self, cb: F) -> Result<T>
     where
         F: FnOnce(&str) -> T,

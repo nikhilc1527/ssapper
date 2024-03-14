@@ -1,12 +1,15 @@
-use std::{env, io::stdin, time::Instant};
+use std::{env, io::stdin, time::{Instant, Duration}, fmt::Debug, sync::Mutex};
 
 extern crate smtlib;
 extern crate peg;
+extern crate rayon;
 
 use peg::str::LineCol;
-use smtlib::{conf::SolverCmd, proc::SmtProc, sexp::{Sexp, Atom}};
+use rayon::prelude::*;
+use rayon::iter::IntoParallelRefMutIterator;
+use smtlib::{conf::SolverCmd, proc::{SmtProc, SolverError}, sexp::{Sexp, Atom}};
 
-fn is_checksat(sexp: &Sexp) -> bool {
+fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp
     else {return false};
 
@@ -19,38 +22,58 @@ fn is_checksat(sexp: &Sexp) -> bool {
     let Atom::S(s) = y
     else {return false};
 
-    s == "check-sat"
+    s == "check-sat" || s == "get-model" || s == "get-info"
+}
+
+#[derive(Debug)]
+struct Status (
+    usize,
+    Duration,
+    String,
+);
+
+fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
+    let responses: Mutex<Vec<Status>> = Mutex::new(Vec::new());
+
+    procs.par_iter_mut().enumerate().for_each(|(i, p)| {
+        // out of the send and get_response, send is order of microseconds and get_response is order of milliseconds
+        // dont know if that is because of actual computation time or IO time
+        // need more testing data to figure that out
+
+        let start = Instant::now();
+        // println!("sending {:?}", sexp);
+        p.send(sexp);
+        let res = if get_resp {
+            p.get_response(|s| s.to_string()).unwrap()
+        } else { "".to_string() };
+        let duration = start.elapsed();
+
+        let mut rl = responses.lock().unwrap();
+        rl.push(Status(i, duration, res));
+    });
+    
+    return responses.into_inner().unwrap();
 }
 
 fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize
                , procs: &mut [SmtProc]) -> Result<(), peg::error::ParseError<LineCol>> {
-    // println!("{}\nline {}-{}", sexp_str, _running_line, linenum);
-
     let sexp = smtlib::sexp::parse(sexp_str)?;
+    let get_response = is_response_needed(&sexp);
 
-    let check_sat = is_checksat(&sexp);
+    let res = send_all(&sexp, procs, get_response);
 
-    if check_sat {
-        for p in procs.iter_mut() {
-            let start = Instant::now();
-            p.send(&sexp);
-            let duration = start.elapsed();
-            println!("line {} check-sat took {:?}", linenum, duration);
+    if get_response {
+        println!("line {}, response to {}", linenum, sexp_str);
+        for r in &res {
+            let Status(i, dur, s) = r;
+            println!("{}th solver took {:?}:\n{}", i + 1, dur, s);
         }
-    } else {
-        for p in procs.iter_mut() {
-            p.send(&sexp);
-        }            
     }
 
     Ok(())
 }
 
 fn main() {
-    // let l = smtlib::sexp::parse("\n  \n \n(check-sat) \n  ");
-    // println!("{:?}", l);
-    // return;
-
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
@@ -111,7 +134,7 @@ fn main() {
                     par_balance -= 1;
                     line_has_stuff = true;
                 }
-                if c == ';' { // TODO: running_line doesnt update on comment lines
+                if c == ';' { // TODO: running_line doesnt update on lines that only have comments
                     running = running[..ind].to_string();
                     break;
                 }
