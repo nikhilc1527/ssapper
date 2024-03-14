@@ -1,16 +1,13 @@
 #!/bin/sh
 
-cargo build
+cargo build || exit $?
 
-./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < ./testing_inputs/handmade/in1
-./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < ./testing_inputs/handmade/in2
-./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < ./testing_inputs/handmade/in3
-
-# '!' is not handled by parser
-# cargo run -- -s z3\ -in < ./testing_inputs/handmade/in4
+./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in1 -o out/out1
+./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in2 -o out/out2
+./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in3 -o out/out3
+./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in3 -o out/out4
 
 for f in testing_inputs/stainless_benchmarks/*;
 do
-    echo $f
-    ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in < $f
+    ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i "$f" -o out/$(basename "$f")
 done

@@ -1,4 +1,4 @@
-use std::{env, io::stdin, time::{Instant, Duration}, fmt::Debug, sync::Mutex, path::Path, process::exit};
+use std::{env, io::{stdin, BufReader, BufRead, BufWriter, Write}, time::{Instant, Duration}, fmt::Debug, sync::Mutex, process::exit, fs::File};
 
 extern crate smtlib;
 extern crate peg;
@@ -10,6 +10,27 @@ use peg::str::LineCol;
 use rayon::prelude::*;
 use rayon::iter::IntoParallelRefMutIterator;
 use smtlib::{conf::SolverCmd, proc::{SmtProc, SolverError}, sexp::{Sexp, Atom}};
+
+struct Logging {
+    outfile: Option<BufWriter<File>>,
+}
+
+impl Logging {
+    fn new(out: Option<&String>) -> Logging {
+        let writer = out.map(|outfilename| BufWriter::new(File::create(outfilename).unwrap()));
+
+        Logging { outfile: writer }
+    }
+    
+    fn log(&mut self, s: &str) {
+        match &mut (self.outfile) {
+            Some(file) => {
+                file.write_all(s.as_bytes()).unwrap();
+            },
+            None => ()
+        }
+    }
+}
 
 fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp
@@ -53,7 +74,7 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
             match r {
                 Ok(_) => (),
                 Err(SolverError::UnexpectedClose(msg)) => {
-                    println!("{:?}", msg);
+                    println!("{}", format!("{:?}", msg).magenta());
                 }
                 Err(_) => ()
             }
@@ -67,11 +88,10 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
         rl.push(Status(i, duration, res));
     });
     
-    return responses.into_inner().unwrap();
+    responses.into_inner().unwrap()
 }
 
-fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize
-               , procs: &mut [SmtProc]) -> Result<(), peg::error::ParseError<LineCol>> {
+fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize, procs: &mut [SmtProc], logger: &mut Logging) -> Result<(), peg::error::ParseError<LineCol>> {
     // println!("line {}-{}: {}", _running_line, linenum, sexp_str);
     let sexp = smtlib::sexp::parse(sexp_str)?;
     let get_response = is_response_needed(&sexp);
@@ -79,10 +99,10 @@ fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize
     let res = send_all(&sexp, procs, get_response);
 
     if get_response {
-        println!("line {}, response to {}", linenum, sexp_str);
+        logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
         for r in &res {
             let Status(i, dur, s) = r;
-            println!("{}th solver took {:?}:\n{}", i + 1, dur, s);
+            logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
         }
     }
 
@@ -93,23 +113,41 @@ fn main() {
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
-    { // TODO: maybe change to some established cmdline args parser at some point
-        let mut i = 1;
-        while i < args.len() {
-            if args[i] == "-s" || args[i] == "--solver" {
-                i += 1;
-                while i < args.len() && args[i] != "--" {
-                    solvers.push(args[i].clone());
-                    i += 1;
-                }
-            } else {
-                panic!("unknown argument");
-            }
+    let mut infilename = None;
+    let mut outfilename = None;
+    // TODO: maybe change to some established cmdline args parser at some point
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "-s" || args[i] == "--solver" {
             i += 1;
+            while i < args.len() && args[i] != "--" {
+                solvers.push(args[i].clone());
+                i += 1;
+            }
         }
+        else if args[i] == "-i" || args[i] == "--input" {
+            i += 1;
+            infilename = Some(&args[i]);
+        }
+        else if args[i] == "-o" || args[i] == "--output" {
+            i += 1;
+            outfilename = Some(&args[i]);
+        }
+        else {
+            panic!("unknown argument");
+        }
+        i += 1;
     }
+    
+    let inlines: Box<dyn BufRead> =
+        match infilename {
+            None => Box::new(stdin().lock()),
+            Some(filename) => Box::new(BufReader::new(File::open(filename).expect("could not open file")))
+        };
 
     let mut procs: Vec<SmtProc> = Vec::new();
+
+    let mut _logger = Logging::new(outfilename);
 
     for solver in &solvers {
         let split: Vec<&str> = solver.split(' ').collect();
@@ -123,17 +161,18 @@ fn main() {
         // also assuming that input of command is well-formed
         // TODO: fix security vulnerability (or dont care)
 
-        let tee_path = Some(Path::new("./tee_out"));
-        procs.push(SmtProc::new(cmd, tee_path).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
+        procs.push(SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
     }
 
-    {
         let mut linenum = 0;
         let mut running: String = "".to_string();
         let mut running_line = 1;
         let mut par_balance = 0;
-        let mut line_has_stuff = false;
-        for line in stdin().lines() {
+    let mut line_has_stuff = false;
+
+    let prog_start = Instant::now();
+    
+        for line in inlines.lines() {
             linenum += 1;
 
             let line = line.unwrap();
@@ -161,7 +200,7 @@ fn main() {
 
                 if line_has_stuff && par_balance == 0 {
                     line_has_stuff = false;
-                    let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs);
+                    let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs, &mut _logger);
                     match res {
                         Ok(()) => (),
                         // exit program when we get parse error, since rest of the program is invalid
@@ -179,5 +218,11 @@ fn main() {
                 }
             }
         }
+
+    let prog_dur = prog_start.elapsed();
+
+    if let Some(infilename) = infilename {
+        let s = format!("successfully ran input file {} in {:?}", infilename, prog_dur).green();
+        println!("{}", s);
     }
 }

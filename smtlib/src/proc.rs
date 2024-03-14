@@ -342,7 +342,7 @@ impl SmtProc {
             let n = self.stdout.read_line(&mut buf)?;
             if n == 0 {
                 self.check_killed()?;
-                if buf.len() == 0 {
+                if buf.is_empty() {
                     return Err(SolverError::EmptyOutput);
                 }
                 let msg = Self::parse_error(&buf);
