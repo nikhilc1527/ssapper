@@ -58,6 +58,7 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
 
 fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize
                , procs: &mut [SmtProc]) -> Result<(), peg::error::ParseError<LineCol>> {
+    // println!("line {}-{}: {}", _running_line, linenum, sexp_str);
     let sexp = smtlib::sexp::parse(sexp_str)?;
     let get_response = is_response_needed(&sexp);
 
@@ -124,18 +125,20 @@ fn main() {
 
             running.push_str(&line);
 
-            let mut handled = false;
             for (line_i, c) in line.chars().enumerate() {
                 let ind = running.len() - (line.len() - line_i);
                 if c == '(' {
                     par_balance += 1;
+                    if par_balance == 1 {
+                        running_line = linenum;
+                    }
                     line_has_stuff = true;
                 }
                 if c == ')' {
                     par_balance -= 1;
                     line_has_stuff = true;
                 }
-                if c == ';' { // TODO: running_line doesnt update on lines that only have comments
+                if c == ';' {
                     running = running[..ind].to_string();
                     break;
                 }
@@ -148,11 +151,7 @@ fn main() {
                         Err(e) => println!("parse error on line {}-{}\n{}\n {:?}", running_line, linenum, &running[..=ind], e),
                     }
                     running = running[ind+1..].to_string();
-                    handled = true;
                 }
-            }
-            if handled {
-                running_line = linenum + 1;
             }
         }
     }
