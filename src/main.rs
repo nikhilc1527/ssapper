@@ -5,7 +5,7 @@ use std::{
     io::{stdin, BufRead, BufReader, BufWriter, Write},
     process::exit,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, collections::{HashSet, HashMap},
 };
 
 extern crate colored;
@@ -20,7 +20,7 @@ use rayon::prelude::*;
 use smtlib::{
     conf::SolverCmd,
     proc::{SmtProc, SolverError},
-    sexp::{Atom, Sexp},
+    sexp::{Atom, Sexp, parse},
 };
 
 struct Logging {
@@ -47,7 +47,7 @@ impl Logging {
 fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp else { return false };
 
-    if list.len() != 1 {
+    if list.len() == 0 {
         return false;
     }
     let x = &list[0];
@@ -56,7 +56,17 @@ fn is_response_needed(sexp: &Sexp) -> bool {
 
     let Atom::S(s) = y else { return false };
 
-    s == "check-sat" || s == "get-model" || s == "get-info"
+    let important_sexps = HashSet::from(
+        [
+            "check-sat",
+            "get-model",
+            "get-info",
+            "get-value",
+            "get-unsat-core",
+        ]
+    );
+
+    important_sexps.contains(s as &str)
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +113,8 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
 }
 
 #[derive(Debug)]
-struct Cache(Vec<(Sexp, Vec<Status>)>); // sexp sent, responses
+// TODO: make it hashmap
+struct Cache(HashMap<Sexp, Vec<Status>>); // sexp sent, responses
 
 fn handle_sexp(
     sexp_str: &str,
@@ -114,16 +125,14 @@ fn handle_sexp(
     cache: Option<Cache>,
 ) -> Result<Cache, peg::error::ParseError<LineCol>> {
     // println!("line {}-{}: {}", _running_line, linenum, sexp_str);
-    let sexp = smtlib::sexp::parse(sexp_str)?;
+    let sexp = parse(sexp_str)?;
     let get_response = is_response_needed(&sexp);
     let mut cached = None;
     if let Some(cache) = &cache {
         let Cache(caches) = cache;
-        for (old_sexp, resp) in caches {
-            if old_sexp == &sexp {
-                cached = Some(resp.clone());
-                break;
-            }
+        match caches.get(&sexp) {
+            Some(resp) => cached = Some(resp.clone()),
+            None => ()
         }
     }
 
@@ -140,12 +149,12 @@ fn handle_sexp(
     }
 
     if !get_response {
-        Ok(Cache(vec![]))
+        Ok(Cache(HashMap::new()))
     } else {
-        let Cache(mut v) = cache.unwrap_or(Cache(vec![]));
+        let Cache(mut v) = cache.unwrap_or(Cache(HashMap::new()));
 
         if cached.is_none() {
-            v.push((sexp, res));
+            v.insert(sexp, res);
         }
 
         Ok(Cache(v))
@@ -153,6 +162,10 @@ fn handle_sexp(
 }
 
 fn main() {
+    // let s = parse("(1.2)");
+    // println!("{:?}", s);
+    // return;
+    
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
@@ -188,7 +201,7 @@ fn main() {
 
     let mut procs: Vec<SmtProc> = Vec::new();
 
-    let mut _logger = Logging::new(outfilename);
+    let mut logger = Logging::new(outfilename);
 
     for solver in &solvers {
         let split: Vec<&str> = solver.split(' ').collect();
@@ -252,7 +265,7 @@ fn main() {
                     linenum,
                     running_line,
                     &mut procs,
-                    &mut _logger,
+                    &mut logger,
                     cache,
                 );
                 match res {

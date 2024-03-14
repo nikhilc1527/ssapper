@@ -12,7 +12,7 @@ use peg::str::LineCol;
 use serde::Serialize;
 
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash)]
 pub enum Atom {
     I(usize),
     S(String),
@@ -31,7 +31,7 @@ impl Atom {
 
 /// An s-expression which also tracks comments.
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash)]
 pub enum Sexp {
     Atom(Atom),
     Comment(String),
@@ -150,9 +150,11 @@ impl Sexp {
 
 peg::parser! {
 grammar parser() for str {
-  rule ident_start() = ['a'..='z' | 'A'..='Z' | '_' | '\'' | '<' | '>' | ':' | '=' | '$' | '@' ]
-  rule ident_char() = ident_start() / ['0'..='9' | '!' | '#' | '%' | '-' | '.']
-  rule ident() = quiet! { ident_start() ident_char()* } / expected!("atom")
+  rule ident_start() -> char = ['0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '\'' | '<' | '>' | ':' | '=' | '$' | '@' | '!' | '+' | '-' | '*' | '#' | '/' | '~' | '.']
+  // rule ident_char()  -> char = ident_start() / ['0'..='9' | '#' | '%' | '-' | '.' | '+' | '>']
+        // rule ident() -> String = a:$(ident_start()) b:$(ident_char()*) {let mut a = a.to_string(); a.push_str(b); a}
+  rule ident() = quiet! { ident_start() ident_start()* }
+  // rule ident() = quiet! { ident_start() ident_start()* } / expected!("atom")
 
   rule whitespace() = [' ' | '\t' | '\n' | '\r']
   rule _ = whitespace()*
