@@ -7,7 +7,7 @@ cargo build || exit $?
 ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in3 -o out/out3
 ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i ./testing_inputs/handmade/in3 -o out/out4
 
-for f in testing_inputs/stainless_benchmarks/*;
-do
-    ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i "$f" -o out/$(basename "$f")
-done
+# for f in testing_inputs/stainless_benchmarks/*;
+# do
+#     ./target/debug/smtprof -s z3\ -in z3\ -in z3\ -in -- -i "$f" -o out/$(basename "$f")
+# done

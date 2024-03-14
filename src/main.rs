@@ -48,7 +48,7 @@ fn is_response_needed(sexp: &Sexp) -> bool {
     s == "check-sat" || s == "get-model" || s == "get-info"
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Status (
     usize, // index of solver
     Duration, // duration that solver took to solve
@@ -91,13 +91,28 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
     responses.into_inner().unwrap()
 }
 
-fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize, procs: &mut [SmtProc], logger: &mut Logging) -> Result<(), peg::error::ParseError<LineCol>> {
+#[derive(Debug)]
+struct Cache (Vec<(Sexp, Vec<Status>)>); // sexp sent, responses
+
+fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize, procs: &mut [SmtProc], logger: &mut Logging, cache: Option<Cache>) -> Result<Cache, peg::error::ParseError<LineCol>> {
     // println!("line {}-{}: {}", _running_line, linenum, sexp_str);
     let sexp = smtlib::sexp::parse(sexp_str)?;
     let get_response = is_response_needed(&sexp);
+    let mut cached = None;
+    if let Some(cache) = &cache {
+        let Cache(caches) = cache;
+        for (old_sexp, resp) in caches {
+            if old_sexp == &sexp {
+                cached = Some(resp.clone());
+                break;
+            }
+        }
+    }
 
-    let res = send_all(&sexp, procs, get_response);
-
+    let res = match &cached {
+        Some(resp) => resp.clone(),
+        None => send_all(&sexp, procs, get_response)
+    };
     if get_response {
         logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
         for r in &res {
@@ -106,7 +121,21 @@ fn handle_sexp(sexp_str: &str, linenum: usize, _running_line: usize, procs: &mut
         }
     }
 
-    Ok(())
+    if !get_response {
+        Ok(Cache(vec![]))
+    }
+    else {
+        let Cache(mut v) = cache.unwrap_or(Cache(vec![]));
+
+        if let Some(_) = &cached {
+            
+        }
+        else {
+            v.push((sexp, res));
+        }
+        
+        Ok(Cache(v))
+    }
 }
 
 fn main() {
@@ -164,60 +193,61 @@ fn main() {
         procs.push(SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)));
     }
 
-        let mut linenum = 0;
-        let mut running: String = "".to_string();
-        let mut running_line = 1;
-        let mut par_balance = 0;
+    let mut linenum = 0;
+    let mut running: String = "".to_string();
+    let mut running_line = 1;
+    let mut par_balance = 0;
     let mut line_has_stuff = false;
 
     let prog_start = Instant::now();
+    let mut cache: Option<Cache> = None;
     
-        for line in inlines.lines() {
-            linenum += 1;
+    for line in inlines.lines() {
+        linenum += 1;
 
-            let line = line.unwrap();
+        let line = line.unwrap();
 
-            running.push_str(&line);
+        running.push_str(&line);
 
-            for (line_i, c) in line.chars().enumerate() {
-                if c == '(' {
-                    par_balance += 1;
-                    if par_balance == 1 {
-                        running_line = linenum;
+        for (line_i, c) in line.chars().enumerate() {
+            if c == '(' {
+                par_balance += 1;
+                if par_balance == 1 {
+                    running_line = linenum;
+                }
+                line_has_stuff = true;
+            }
+            if c == ')' {
+                par_balance -= 1;
+                line_has_stuff = true;
+            }
+
+            let ind = running.len() - (line.len() - line_i);
+            if c == ';' {
+                running = running[..ind].to_string();
+                break;
+            }
+
+            if line_has_stuff && par_balance == 0 {
+                line_has_stuff = false;
+                let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs, &mut _logger, cache);
+                match res {
+                    Ok(c) => cache = Some(c),
+                    // exit program when we get parse error, since rest of the program is invalid
+                    Err(e) => {
+                        let ls =
+                            if running_line == linenum {linenum.to_string()}
+                        else {format!("{}-{}", running_line, linenum)};
+
+                        let s = format!("parse error on line {}:", ls).red();
+                        println!("{}\n{:?}", s, e);
+                        exit(1);
                     }
-                    line_has_stuff = true;
                 }
-                if c == ')' {
-                    par_balance -= 1;
-                    line_has_stuff = true;
-                }
-
-                let ind = running.len() - (line.len() - line_i);
-                if c == ';' {
-                    running = running[..ind].to_string();
-                    break;
-                }
-
-                if line_has_stuff && par_balance == 0 {
-                    line_has_stuff = false;
-                    let res = handle_sexp(&running[..=ind], linenum, running_line, &mut procs, &mut _logger);
-                    match res {
-                        Ok(()) => (),
-                        // exit program when we get parse error, since rest of the program is invalid
-                        Err(e) => {
-                            let ls =
-                                if running_line == linenum {linenum.to_string()}
-                            else {format!("{}-{}", running_line, linenum)};
-
-                            let s = format!("parse error on line {}:", ls).red();
-                            println!("{}\n{:?}", s, e);
-                            exit(1);
-                        }
-                    }
-                    running = running[ind+1..].to_string();
-                }
+                running = running[ind+1..].to_string();
             }
         }
+    }
 
     let prog_dur = prog_start.elapsed();
 
