@@ -9,3 +9,7 @@ Read about it here: [https://groups.google.com/g/smt-lib/c/BFsWZS4Prcs?pli=1](St
 ## handmade
 
 This directory contains hand written tests for quick testing. A lot of them are taken from [https://smtlib.cs.uiowa.edu/examples.shtml](SMTLib Website).
+
+# QF_NIA
+http://smt-lib.loria.fr/zip/QF_NIA.zip
+got the link from https://github.com/eth-sri/fastsmt

@@ -150,9 +150,13 @@ impl Sexp {
 
 peg::parser! {
 grammar parser() for str {
-  rule ident_start() -> char = ['0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '\'' | '<' | '>' | ':' | '=' | '$' | '@' | '!' | '+' | '-' | '*' | '#' | '/' | '~' | '.']
-  // rule ident_char()  -> char = ident_start() / ['0'..='9' | '#' | '%' | '-' | '.' | '+' | '>']
-        // rule ident() -> String = a:$(ident_start()) b:$(ident_char()*) {let mut a = a.to_string(); a.push_str(b); a}
+    rule ident_start() -> char =
+        ['!'..='\'' | '*'..='~'] // all characters except for space, parenthesis
+    // rule ident_start() -> char =
+    //     ['0'..='9' | 'a'..='z' | 'A'..='Z' | '_' | '\'' |
+    //      '<' | '>' | ':' | '=' | '$' | '@' | '!' | '+' |
+    //      '-' | '*' | '#' | '/' | '~' | '.']
+
   rule ident() = quiet! { ident_start() ident_start()* }
   // rule ident() = quiet! { ident_start() ident_start()* } / expected!("atom")
 

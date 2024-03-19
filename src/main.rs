@@ -47,7 +47,7 @@ impl Logging {
 fn is_response_needed(sexp: &Sexp) -> bool {
     let Sexp::List(list) = sexp else { return false };
 
-    if list.len() == 0 {
+    if list.is_empty() {
         return false;
     }
     let x = &list[0];
@@ -76,63 +76,63 @@ struct Status(
     String,   // response (in case of check-sat, get-model, etc)
 );
 
-fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
-    let responses: Mutex<Vec<Status>> = Mutex::new(Vec::new());
-
+fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status> where F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync {
+    let responses = Mutex::new(Vec::new());
     procs.par_iter_mut().enumerate().for_each(|(i, p)| {
-        // out of the send and get_response, send is order of microseconds and get_response is order of milliseconds
-        // dont know if that is because of actual computation time or IO time
-        // need more testing data to figure that out
-
-        let start = Instant::now();
-        // begin timing
-
-        p.send(sexp);
-        let res = if get_resp {
-            p.get_response(|s| s.to_string()).unwrap()
-        } else {
-            let r = p.get_response(|s| s.to_string());
-            match r {
-                Ok(_) => (),
-                Err(SolverError::UnexpectedClose(msg)) => {
-                    println!("{}", format!("{:?}", msg).magenta());
-                }
-                Err(_) => (),
-            }
-            "".to_string()
-        };
-
-        // end timing
-        let duration = start.elapsed();
+        let s = f(i,p);
 
         let mut rl = responses.lock().unwrap();
-        rl.push(Status(i, duration, res));
+        rl.push(s);
     });
 
     responses.into_inner().unwrap()
 }
 
+fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
+    let f = |i: usize, p: &mut SmtProc| {
+        let start = Instant::now();
+        // begin timing
+
+        p.send(sexp);
+        let res =
+            if get_resp {
+                p.get_response(|s| s.to_string()).unwrap()
+            } else {
+                let r = p.get_response(|s| s.to_string());
+                if let Err(SolverError::UnexpectedClose(msg)) = r {
+                    println!("{}", format!("ERROR: {:?}", msg).magenta());
+                }
+
+                "".to_string()
+            };
+
+        // end timing
+        let duration = start.elapsed();
+        Status(i, duration, res)
+    };
+
+    for_all_par(procs, f)
+}
+
 #[derive(Debug)]
-// TODO: make it hashmap
 struct Cache(HashMap<Sexp, Vec<Status>>); // sexp sent, responses
 
 fn handle_sexp(
     sexp_str: &str,
-    linenum: usize,
+    _linenum: usize,
     _running_line: usize,
     procs: &mut [SmtProc],
     logger: &mut Logging,
     cache: Option<Cache>,
 ) -> Result<Cache, peg::error::ParseError<LineCol>> {
-    // println!("line {}-{}: {}", _running_line, linenum, sexp_str);
     let sexp = parse(sexp_str)?;
     let get_response = is_response_needed(&sexp);
     let mut cached = None;
     if let Some(cache) = &cache {
         let Cache(caches) = cache;
-        match caches.get(&sexp) {
-            Some(resp) => cached = Some(resp.clone()),
-            None => ()
+
+        if let Some(resp) = caches.get(&sexp) {
+            cached = Some(resp.clone());
         }
     }
 
@@ -141,10 +141,11 @@ fn handle_sexp(
         None => send_all(&sexp, procs, get_response),
     };
     if get_response {
-        logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
+        // logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
         for r in &res {
-            let Status(i, dur, s) = r;
-            logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
+            let Status(_i, _dur, s) = r;
+            // logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
+            logger.log(&format!("{s}\n"));
         }
     }
 
@@ -162,10 +163,6 @@ fn handle_sexp(
 }
 
 fn main() {
-    // let s = parse("(1.2)");
-    // println!("{:?}", s);
-    // return;
-    
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
@@ -238,6 +235,7 @@ fn main() {
         let line = line.unwrap();
 
         running.push_str(&line);
+        // running.push('\n');
 
         for (line_i, c) in line.chars().enumerate() {
             if c == '(' {
@@ -254,12 +252,18 @@ fn main() {
 
             let ind = running.len() - (line.len() - line_i);
             if c == ';' {
+                let comment = &running[ind..];
+                for_all_par(&mut procs, |_i, p| {
+                    p.send_str(comment);
+                    Status(0,Duration::new(0, 0),"".to_string())
+                });
                 running = running[..ind].to_string();
                 break;
             }
 
             if line_has_stuff && par_balance == 0 {
                 line_has_stuff = false;
+                // println!("sending {}", &running[..=ind]);
                 let res = handle_sexp(
                     &running[..=ind],
                     linenum,
@@ -270,7 +274,8 @@ fn main() {
                 );
                 match res {
                     Ok(c) => cache = Some(c),
-                    // exit program when we get parse error, since rest of the program is invalid
+                    // exit program when we get parse error,
+                    // since rest of the program is invalid
                     Err(e) => {
                         let ls = if running_line == linenum {
                             linenum.to_string()
@@ -279,7 +284,8 @@ fn main() {
                         };
 
                         let s = if let Some(infilename) = infilename {
-                            format!("input file {}:\nparse error on line {}:", infilename, ls).red()
+                            format!("input file {}:\nparse error on line {}:",
+                                    infilename, ls).red()
                         } else {
                             format!("parse error on line {}:", ls).red()
                         };
@@ -299,7 +305,7 @@ fn main() {
             "successfully ran input file {} in {:?}",
             infilename, prog_dur
         )
-        .green();
+            .green();
         println!("{}", s);
     }
 }

@@ -205,6 +205,11 @@ impl SmtProc {
         }
     }
 
+    /// sends raw string to process
+    pub fn send_str(&mut self, data: &str) {
+        writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
+    }
+
     /// Low-level API to send the solver a command that expects a response,
     /// which is parsed as a single s-expression.
     fn send_with_reply(&mut self, data: &sexp::Sexp) -> Result<sexp::Sexp> {
