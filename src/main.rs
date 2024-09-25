@@ -1,15 +1,11 @@
 mod ssapper;
 
 use std::{
-    collections::{HashMap, HashSet},
+    borrow::BorrowMut,
     env,
-    fmt::Debug,
     fs::File,
-    io::{stdin, BufRead, BufReader, BufWriter, Write},
+    io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
-    process::exit,
-    sync::Mutex,
-    time::{Duration, Instant},
 };
 
 extern crate clap;
@@ -20,18 +16,9 @@ extern crate smtlib;
 
 use clap::Parser;
 
-use colored::Colorize;
-
-use peg::str::LineCol;
-
-use rayon::iter::IntoParallelRefMutIterator;
 use rayon::prelude::*;
 
-use smtlib::{
-    conf::SolverCmd,
-    proc::{SmtProc, SolverError},
-    sexp::{parse, Atom, Sexp},
-};
+use smtlib::{conf::SolverCmd, proc::SmtProc};
 use ssapper::{parse_file, send_sexps};
 
 // struct Logging {
@@ -172,15 +159,10 @@ struct Cli {
 
 fn main() {
     // setup solvers
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    let cli: Cli = Cli::parse();
-
-    let mut inlines: Box<dyn BufRead> = match cli.inputfile {
-        None => Box::new(BufReader::new(
-            File::open("testing_inputs/handmade/in1").expect("could not open file"),
-        )),
-        // None => Box::new(stdin().lock()),
+    let inlines: Box<dyn BufRead> = match cli.inputfile {
+        None => Box::new(stdin().lock()),
         Some(filename) => Box::new(BufReader::new(
             File::open(filename).expect("could not open file"),
         )),
@@ -207,13 +189,23 @@ fn main() {
         );
     }
 
+    println!("finished reading cli");
     let sexps = parse_file(inlines).expect("failed to parse input");
 
+    let mut output_writer: Box<dyn Write> = match cli.outputfile {
+        None => Box::new(BufWriter::new(stdout())),
+        Some(file) => Box::new(BufWriter::new(
+            File::create(file).expect("couldnt open output file"),
+        )),
+    };
+
+    println!("finished parsing");
     for proc in &mut procs {
-        let outputs = send_sexps(sexps.as_slice(), proc);
-        for out in &outputs {
-            println!("{}", out);
-        }
+        send_sexps(sexps.as_slice(), proc, &mut output_writer);
+        // let outputs = send_sexps(sexps.as_slice(), proc, output_writer.borrow_mut());
+        // for out in &outputs {
+        //     writeln!(output_writer, "{}", out).expect("couldnt write to output");
+        // }
     }
 
     // println!("{:?}", sexps);

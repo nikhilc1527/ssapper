@@ -1,10 +1,10 @@
 use std::{
     collections::HashSet,
     hash::{DefaultHasher, Hash, Hasher},
-    io::BufRead,
+    io::{BufRead, Write},
 };
 
-use peg::{error::ParseError, str::LineCol};
+use peg::str::LineCol;
 use smtlib::{
     proc::SmtProc,
     sexp::{parse, Atom, Sexp},
@@ -17,9 +17,11 @@ pub struct HashedSexp {
 }
 
 impl HashedSexp {
-    fn new(prefix_sexps: &Vec<Sexp>, sexp: Sexp) -> Self {
+    fn new(prev_hash: u64, sexp: Sexp) -> Self {
         let mut hasher = DefaultHasher::new();
-        prefix_sexps.hash(&mut hasher);
+        // prefix_sexps.hash(&mut hasher);
+        prev_hash.hash(&mut hasher);
+        sexp.hash(&mut hasher);
         let hash = hasher.finish();
         Self { hash, sexp }
     }
@@ -39,6 +41,7 @@ pub fn parse_file<T: BufRead>(
 
     for line in inlines.lines() {
         linenum += 1;
+        println!("parsing line {}", linenum);
 
         let line = line.unwrap();
 
@@ -71,7 +74,11 @@ pub fn parse_file<T: BufRead>(
                 };
 
                 prefix_vec.push(sexp.clone());
-                res.push(HashedSexp::new(&prefix_vec, sexp));
+                if res.is_empty() {
+                    res.push(HashedSexp::new(0, sexp));
+                } else {
+                    res.push(HashedSexp::new(res.last().unwrap().hash, sexp));
+                }
 
                 running = running[ind + 1..].to_string();
             }
@@ -79,18 +86,6 @@ pub fn parse_file<T: BufRead>(
     }
 
     Ok(res)
-}
-
-pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Vec<String> {
-    let mut responses = Vec::new();
-    for s in sexps {
-        proc.send(&s.sexp);
-        let res = proc.get_response(|s| s.to_string());
-        if is_response_needed(&s.sexp) {
-            responses.push(res.expect("failed to get response from proc"));
-        }
-    }
-    responses
 }
 
 fn is_response_needed(sexp: &Sexp) -> bool {
@@ -114,4 +109,18 @@ fn is_response_needed(sexp: &Sexp) -> bool {
     ]);
 
     important_sexps.contains(s as &str)
+}
+
+pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc, writer: &mut Box<dyn Write>) {
+    // let mut responses = Vec::new();
+    for s in sexps {
+        proc.send(&s.sexp);
+        let res = proc.get_response(|s| s.to_string());
+        if is_response_needed(&s.sexp) {
+            // responses.push(res.expect("failed to get response from proc"));
+            writeln!(writer, "{}", res.expect("failed to get response from proc"))
+                .expect("couldnt write to file");
+        }
+    }
+    // responses
 }
