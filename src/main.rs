@@ -191,9 +191,6 @@ struct Cli {
 }
 
 fn main() {
-    // println!("output is: {:?}", parse("(set-option :produce-models true)"));
-    // exit(0);
-
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
@@ -245,97 +242,17 @@ fn main() {
                 .collect(),
             options: vec![],
         };
-        // running commands straight from user input, (possible) security vulnerability
+        // running commands straight from user input feels iffy
         // also assuming that input of command is well-formed
-        // TODO: fix security vulnerability (or dont care)
 
         procs.push(
             SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)),
         );
     }
 
-    let mut linenum = 0;
-    let mut running: String = "".to_string();
-    let mut running_line = 1;
-    let mut par_balance = 0;
-    let mut line_has_stuff = false;
-
-    let prog_start = Instant::now();
-    let mut cache: Option<Cache> = None;
-
-    // for line in inlines.lines() {
-    //     linenum += 1;
-
-    //     let line = line.unwrap();
-
-    //     running.push_str(&line);
-    //     // running.push('\n');
-
-    //     for (line_i, c) in line.chars().enumerate() {
-    //         if c == '(' {
-    //             par_balance += 1;
-    //             if par_balance == 1 {
-    //                 running_line = linenum;
-    //             }
-    //             line_has_stuff = true;
-    //         }
-    //         if c == ')' {
-    //             par_balance -= 1;
-    //             line_has_stuff = true;
-    //         }
-
-    //         let ind = running.len() - (line.len() - line_i);
-    //         if c == ';' {
-    //             let comment = &running[ind..];
-    //             for_all_par(&mut procs, |_i, p| {
-    //                 p.send_str(comment);
-    //                 Status(0, Duration::new(0, 0), "".to_string())
-    //             });
-    //             running = running[..ind].to_string();
-    //             break;
-    //         }
-
-    //         if line_has_stuff && par_balance == 0 {
-    //             line_has_stuff = false;
-    //             // println!("sending {}", &running[..=ind]);
-    //             let res = handle_sexp(
-    //                 &running[..=ind],
-    //                 linenum,
-    //                 running_line,
-    //                 &mut procs,
-    //                 &mut logger,
-    //                 cache,
-    //             );
-    //             match res {
-    //                 Ok(c) => cache = Some(c),
-    //                 // exit program when we get parse error,
-    //                 // since rest of the program is invalid
-    //                 Err(e) => {
-    //                     let ls = if running_line == linenum {
-    //                         linenum.to_string()
-    //                     } else {
-    //                         format!("{}-{}", running_line, linenum)
-    //                     };
-
-    //                     let s = if let Some(infilename) = infilename {
-    //                         format!("input file {}:\nparse error on line {}:", infilename, ls).red()
-    //                     } else {
-    //                         format!("parse error on line {}:", ls).red()
-    //                     };
-    //                     println!("{}\n{:?}", s, e);
-    //                     exit(1);
-    //                 }
-    //             }
-    //             running = running[ind + 1..].to_string();
-    //         }
-    //     }
-    // }
-
     let sexps = parse_file(inlines);
 
     // println!("{:?}", sexps);
-
-    // let prog_dur = prog_start.elapsed();
 
     // if let Some(infilename) = infilename {
     //     let s = format!(
