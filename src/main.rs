@@ -1,27 +1,38 @@
+mod ssapper;
+
 use std::{
+    collections::{HashMap, HashSet},
     env,
     fmt::Debug,
     fs::File,
     io::{stdin, BufRead, BufReader, BufWriter, Write},
+    path::PathBuf,
     process::exit,
     sync::Mutex,
-    time::{Duration, Instant}, collections::{HashSet, HashMap},
+    time::{Duration, Instant},
 };
 
+extern crate clap;
 extern crate colored;
 extern crate peg;
 extern crate rayon;
 extern crate smtlib;
 
+use clap::Parser;
+
 use colored::Colorize;
+
 use peg::str::LineCol;
+
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::prelude::*;
+
 use smtlib::{
     conf::SolverCmd,
     proc::{SmtProc, SolverError},
-    sexp::{Atom, Sexp, parse},
+    sexp::{parse, Atom, Sexp},
 };
+use ssapper::parse_file;
 
 struct Logging {
     outfile: Option<BufWriter<File>>,
@@ -56,15 +67,13 @@ fn is_response_needed(sexp: &Sexp) -> bool {
 
     let Atom::S(s) = y else { return false };
 
-    let important_sexps = HashSet::from(
-        [
-            "check-sat",
-            "get-model",
-            "get-info",
-            "get-value",
-            "get-unsat-core",
-        ]
-    );
+    let important_sexps = HashSet::from([
+        "check-sat",
+        "get-model",
+        "get-info",
+        "get-value",
+        "get-unsat-core",
+    ]);
 
     important_sexps.contains(s as &str)
 }
@@ -76,10 +85,13 @@ struct Status(
     String,   // response (in case of check-sat, get-model, etc)
 );
 
-fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status> where F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync {
+fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status>
+where
+    F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync,
+{
     let responses = Mutex::new(Vec::new());
     procs.par_iter_mut().enumerate().for_each(|(i, p)| {
-        let s = f(i,p);
+        let s = f(i, p);
 
         let mut rl = responses.lock().unwrap();
         rl.push(s);
@@ -94,17 +106,16 @@ fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
         // begin timing
 
         p.send(sexp);
-        let res =
-            if get_resp {
-                p.get_response(|s| s.to_string()).unwrap()
-            } else {
-                let r = p.get_response(|s| s.to_string());
-                if let Err(SolverError::UnexpectedClose(msg)) = r {
-                    println!("{}", format!("ERROR: {:?}", msg).magenta());
-                }
+        let res = if get_resp {
+            p.get_response(|s| s.to_string()).unwrap()
+        } else {
+            let r = p.get_response(|s| s.to_string());
+            if let Err(SolverError::UnexpectedClose(msg)) = r {
+                println!("{}", format!("ERROR: {:?}", msg).magenta());
+            }
 
-                "".to_string()
-            };
+            "".to_string()
+        };
 
         // end timing
         let duration = start.elapsed();
@@ -162,7 +173,27 @@ fn handle_sexp(
     }
 }
 
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// Optional name to operate on
+    name: Option<String>,
+
+    #[arg(short, long)]
+    inputfile: Option<PathBuf>,
+
+    #[arg(short, long)]
+    outputfile: Option<PathBuf>,
+
+    /// Turn debugging information on
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    debug: u8,
+}
+
 fn main() {
+    // println!("output is: {:?}", parse("(set-option :produce-models true)"));
+    // exit(0);
+
     // setup solvers
     let args: Vec<String> = env::args().collect();
     let mut solvers: Vec<String> = Vec::new();
@@ -189,8 +220,11 @@ fn main() {
         i += 1;
     }
 
-    let inlines: Box<dyn BufRead> = match infilename {
-        None => Box::new(stdin().lock()),
+    let mut inlines: Box<dyn BufRead> = match infilename {
+        None => Box::new(BufReader::new(
+            File::open("testing_inputs/handmade/in1").expect("could not open file"),
+        )),
+        // None => Box::new(stdin().lock()),
         Some(filename) => Box::new(BufReader::new(
             File::open(filename).expect("could not open file"),
         )),
@@ -229,83 +263,86 @@ fn main() {
     let prog_start = Instant::now();
     let mut cache: Option<Cache> = None;
 
-    for line in inlines.lines() {
-        linenum += 1;
+    // for line in inlines.lines() {
+    //     linenum += 1;
 
-        let line = line.unwrap();
+    //     let line = line.unwrap();
 
-        running.push_str(&line);
-        // running.push('\n');
+    //     running.push_str(&line);
+    //     // running.push('\n');
 
-        for (line_i, c) in line.chars().enumerate() {
-            if c == '(' {
-                par_balance += 1;
-                if par_balance == 1 {
-                    running_line = linenum;
-                }
-                line_has_stuff = true;
-            }
-            if c == ')' {
-                par_balance -= 1;
-                line_has_stuff = true;
-            }
+    //     for (line_i, c) in line.chars().enumerate() {
+    //         if c == '(' {
+    //             par_balance += 1;
+    //             if par_balance == 1 {
+    //                 running_line = linenum;
+    //             }
+    //             line_has_stuff = true;
+    //         }
+    //         if c == ')' {
+    //             par_balance -= 1;
+    //             line_has_stuff = true;
+    //         }
 
-            let ind = running.len() - (line.len() - line_i);
-            if c == ';' {
-                let comment = &running[ind..];
-                for_all_par(&mut procs, |_i, p| {
-                    p.send_str(comment);
-                    Status(0,Duration::new(0, 0),"".to_string())
-                });
-                running = running[..ind].to_string();
-                break;
-            }
+    //         let ind = running.len() - (line.len() - line_i);
+    //         if c == ';' {
+    //             let comment = &running[ind..];
+    //             for_all_par(&mut procs, |_i, p| {
+    //                 p.send_str(comment);
+    //                 Status(0, Duration::new(0, 0), "".to_string())
+    //             });
+    //             running = running[..ind].to_string();
+    //             break;
+    //         }
 
-            if line_has_stuff && par_balance == 0 {
-                line_has_stuff = false;
-                // println!("sending {}", &running[..=ind]);
-                let res = handle_sexp(
-                    &running[..=ind],
-                    linenum,
-                    running_line,
-                    &mut procs,
-                    &mut logger,
-                    cache,
-                );
-                match res {
-                    Ok(c) => cache = Some(c),
-                    // exit program when we get parse error,
-                    // since rest of the program is invalid
-                    Err(e) => {
-                        let ls = if running_line == linenum {
-                            linenum.to_string()
-                        } else {
-                            format!("{}-{}", running_line, linenum)
-                        };
+    //         if line_has_stuff && par_balance == 0 {
+    //             line_has_stuff = false;
+    //             // println!("sending {}", &running[..=ind]);
+    //             let res = handle_sexp(
+    //                 &running[..=ind],
+    //                 linenum,
+    //                 running_line,
+    //                 &mut procs,
+    //                 &mut logger,
+    //                 cache,
+    //             );
+    //             match res {
+    //                 Ok(c) => cache = Some(c),
+    //                 // exit program when we get parse error,
+    //                 // since rest of the program is invalid
+    //                 Err(e) => {
+    //                     let ls = if running_line == linenum {
+    //                         linenum.to_string()
+    //                     } else {
+    //                         format!("{}-{}", running_line, linenum)
+    //                     };
 
-                        let s = if let Some(infilename) = infilename {
-                            format!("input file {}:\nparse error on line {}:",
-                                    infilename, ls).red()
-                        } else {
-                            format!("parse error on line {}:", ls).red()
-                        };
-                        println!("{}\n{:?}", s, e);
-                        exit(1);
-                    }
-                }
-                running = running[ind + 1..].to_string();
-            }
-        }
-    }
+    //                     let s = if let Some(infilename) = infilename {
+    //                         format!("input file {}:\nparse error on line {}:", infilename, ls).red()
+    //                     } else {
+    //                         format!("parse error on line {}:", ls).red()
+    //                     };
+    //                     println!("{}\n{:?}", s, e);
+    //                     exit(1);
+    //                 }
+    //             }
+    //             running = running[ind + 1..].to_string();
+    //         }
+    //     }
+    // }
 
-    let prog_dur = prog_start.elapsed();
+    let sexps = parse_file(inlines);
 
-    if let Some(infilename) = infilename {
-        let s = format!(
-            "successfully ran input file {} in {:?}",
-            infilename, prog_dur
-        )
-            .green();
-        println!("{}", s);
-    }
+    // println!("{:?}", sexps);
+
+    // let prog_dur = prog_start.elapsed();
+
+    // if let Some(infilename) = infilename {
+    //     let s = format!(
+    //         "successfully ran input file {} in {:?}",
+    //         infilename, prog_dur
+    //     )
+    //     .green();
+    //     println!("{}", s);
+    // }
 }

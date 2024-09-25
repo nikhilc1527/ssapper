@@ -147,8 +147,8 @@ impl SmtProc {
     /// The optional `tee` argument redirects all SMT output to a file, for
     /// debugging purposes.
     pub fn new(mut cmd: SolverCmd, tee: Option<&Path>) -> Result<Self> {
-        cmd.option("produce-models", "true");
-        cmd.option("produce-unsat-assumptions", "true");
+        // cmd.option("produce-models", "true");
+        // cmd.option("produce-unsat-assumptions", "true");
         let mut child = Command::new(OsStr::new(&cmd.cmd))
             .args(cmd.args.iter().map(OsString::from))
             .stdin(Stdio::piped())
@@ -182,7 +182,7 @@ impl SmtProc {
         // silence a warning from CVC4/CVC5 when run manually without -q
         // TODO: figure out what a good default logic is (possibly will be
         // customized to the solver)
-        proc.send(&app("set-logic", vec![atom_s("UFNIA")]));
+        // proc.send(&app("set-logic", vec![atom_s("UFNIA")]));
         Ok(proc)
     }
 

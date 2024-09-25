@@ -3,3 +3,5 @@ Cargo.lock
 /out
 /testing_inputs/dafny
 /testing_inputs/QF_NIA
+/bla
+testing_inputs.tar.gz
