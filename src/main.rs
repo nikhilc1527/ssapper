@@ -32,146 +32,123 @@ use smtlib::{
     proc::{SmtProc, SolverError},
     sexp::{parse, Atom, Sexp},
 };
-use ssapper::parse_file;
+use ssapper::{parse_file, send_sexps};
 
-struct Logging {
-    outfile: Option<BufWriter<File>>,
-}
+// struct Logging {
+//     outfile: Option<BufWriter<File>>,
+// }
 
-impl Logging {
-    fn new(out: Option<&String>) -> Logging {
-        let writer = out.map(|outfilename| BufWriter::new(File::create(outfilename).unwrap()));
+// impl Logging {
+//     fn new(out: Option<&String>) -> Logging {
+//         let writer = out.map(|outfilename| BufWriter::new(File::create(outfilename).unwrap()));
 
-        Logging { outfile: writer }
-    }
+//         Logging { outfile: writer }
+//     }
 
-    fn log(&mut self, s: &str) {
-        match &mut (self.outfile) {
-            Some(file) => {
-                file.write_all(s.as_bytes()).unwrap();
-            }
-            None => (),
-        }
-    }
-}
+//     fn log(&mut self, s: &str) {
+//         match &mut (self.outfile) {
+//             Some(file) => {
+//                 file.write_all(s.as_bytes()).unwrap();
+//             }
+//             None => (),
+//         }
+//     }
+// }
 
-fn is_response_needed(sexp: &Sexp) -> bool {
-    let Sexp::List(list) = sexp else { return false };
+// #[derive(Debug, Clone)]
+// struct Status(
+//     usize,    // index of solver
+//     Duration, // duration that solver took to solve
+//     String,   // response (in case of check-sat, get-model, etc)
+// );
 
-    if list.is_empty() {
-        return false;
-    }
-    let x = &list[0];
+// fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status>
+// where
+//     F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync,
+// {
+//     let responses = Mutex::new(Vec::new());
+//     procs.par_iter_mut().enumerate().for_each(|(i, p)| {
+//         let s = f(i, p);
 
-    let Sexp::Atom(y) = x else { return false };
+//         let mut rl = responses.lock().unwrap();
+//         rl.push(s);
+//     });
 
-    let Atom::S(s) = y else { return false };
+//     responses.into_inner().unwrap()
+// }
 
-    let important_sexps = HashSet::from([
-        "check-sat",
-        "get-model",
-        "get-info",
-        "get-value",
-        "get-unsat-core",
-    ]);
+// fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
+//     let f = |i: usize, p: &mut SmtProc| {
+//         let start = Instant::now();
+//         // begin timing
 
-    important_sexps.contains(s as &str)
-}
+//         p.send(sexp);
+//         let res = if get_resp {
+//             p.get_response(|s| s.to_string()).unwrap()
+//         } else {
+//             let r = p.get_response(|s| s.to_string());
+//             if let Err(SolverError::UnexpectedClose(msg)) = r {
+//                 println!("{}", format!("ERROR: {:?}", msg).magenta());
+//             }
 
-#[derive(Debug, Clone)]
-struct Status(
-    usize,    // index of solver
-    Duration, // duration that solver took to solve
-    String,   // response (in case of check-sat, get-model, etc)
-);
+//             "".to_string()
+//         };
 
-fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status>
-where
-    F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync,
-{
-    let responses = Mutex::new(Vec::new());
-    procs.par_iter_mut().enumerate().for_each(|(i, p)| {
-        let s = f(i, p);
+//         // end timing
+//         let duration = start.elapsed();
+//         Status(i, duration, res)
+//     };
 
-        let mut rl = responses.lock().unwrap();
-        rl.push(s);
-    });
+//     for_all_par(procs, f)
+// }
 
-    responses.into_inner().unwrap()
-}
+// #[derive(Debug)]
+// struct Cache(HashMap<Sexp, Vec<Status>>); // sexp sent, responses
 
-fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
-    let f = |i: usize, p: &mut SmtProc| {
-        let start = Instant::now();
-        // begin timing
+// fn handle_sexp(
+//     sexp_str: &str,
+//     _linenum: usize,
+//     _running_line: usize,
+//     procs: &mut [SmtProc],
+//     logger: &mut Logging,
+//     cache: Option<Cache>,
+// ) -> Result<Cache, peg::error::ParseError<LineCol>> {
+//     let sexp = parse(sexp_str)?;
+//     let get_response = is_response_needed(&sexp);
+//     let mut cached = None;
+//     if let Some(cache) = &cache {
+//         let Cache(caches) = cache;
 
-        p.send(sexp);
-        let res = if get_resp {
-            p.get_response(|s| s.to_string()).unwrap()
-        } else {
-            let r = p.get_response(|s| s.to_string());
-            if let Err(SolverError::UnexpectedClose(msg)) = r {
-                println!("{}", format!("ERROR: {:?}", msg).magenta());
-            }
+//         if let Some(resp) = caches.get(&sexp) {
+//             cached = Some(resp.clone());
+//         }
+//     }
 
-            "".to_string()
-        };
+//     let res = match &cached {
+//         Some(resp) => resp.clone(),
+//         None => send_all(&sexp, procs, get_response),
+//     };
+//     if get_response {
+//         // logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
+//         for r in &res {
+//             let Status(_i, _dur, s) = r;
+//             // logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
+//             logger.log(&format!("{s}\n"));
+//         }
+//     }
 
-        // end timing
-        let duration = start.elapsed();
-        Status(i, duration, res)
-    };
+//     if !get_response {
+//         Ok(Cache(HashMap::new()))
+//     } else {
+//         let Cache(mut v) = cache.unwrap_or(Cache(HashMap::new()));
 
-    for_all_par(procs, f)
-}
+//         if cached.is_none() {
+//             v.insert(sexp, res);
+//         }
 
-#[derive(Debug)]
-struct Cache(HashMap<Sexp, Vec<Status>>); // sexp sent, responses
-
-fn handle_sexp(
-    sexp_str: &str,
-    _linenum: usize,
-    _running_line: usize,
-    procs: &mut [SmtProc],
-    logger: &mut Logging,
-    cache: Option<Cache>,
-) -> Result<Cache, peg::error::ParseError<LineCol>> {
-    let sexp = parse(sexp_str)?;
-    let get_response = is_response_needed(&sexp);
-    let mut cached = None;
-    if let Some(cache) = &cache {
-        let Cache(caches) = cache;
-
-        if let Some(resp) = caches.get(&sexp) {
-            cached = Some(resp.clone());
-        }
-    }
-
-    let res = match &cached {
-        Some(resp) => resp.clone(),
-        None => send_all(&sexp, procs, get_response),
-    };
-    if get_response {
-        // logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
-        for r in &res {
-            let Status(_i, _dur, s) = r;
-            // logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
-            logger.log(&format!("{s}\n"));
-        }
-    }
-
-    if !get_response {
-        Ok(Cache(HashMap::new()))
-    } else {
-        let Cache(mut v) = cache.unwrap_or(Cache(HashMap::new()));
-
-        if cached.is_none() {
-            v.insert(sexp, res);
-        }
-
-        Ok(Cache(v))
-    }
-}
+//         Ok(Cache(v))
+//     }
+// }
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -185,6 +162,9 @@ struct Cli {
     #[arg(short, long)]
     outputfile: Option<PathBuf>,
 
+    #[arg(short, long)]
+    solver: Vec<String>,
+
     /// Turn debugging information on
     #[arg(short, long, action = clap::ArgAction::Count)]
     debug: u8,
@@ -193,31 +173,10 @@ struct Cli {
 fn main() {
     // setup solvers
     let args: Vec<String> = env::args().collect();
-    let mut solvers: Vec<String> = Vec::new();
-    let mut infilename = None;
-    let mut outfilename = None;
-    // TODO: maybe change to some established cmdline args parser at some point
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "-s" || args[i] == "--solver" {
-            i += 1;
-            while i < args.len() && args[i] != "--" {
-                solvers.push(args[i].clone());
-                i += 1;
-            }
-        } else if args[i] == "-i" || args[i] == "--input" {
-            i += 1;
-            infilename = Some(&args[i]);
-        } else if args[i] == "-o" || args[i] == "--output" {
-            i += 1;
-            outfilename = Some(&args[i]);
-        } else {
-            panic!("unknown argument");
-        }
-        i += 1;
-    }
 
-    let mut inlines: Box<dyn BufRead> = match infilename {
+    let cli: Cli = Cli::parse();
+
+    let mut inlines: Box<dyn BufRead> = match cli.inputfile {
         None => Box::new(BufReader::new(
             File::open("testing_inputs/handmade/in1").expect("could not open file"),
         )),
@@ -229,9 +188,7 @@ fn main() {
 
     let mut procs: Vec<SmtProc> = Vec::new();
 
-    let mut logger = Logging::new(outfilename);
-
-    for solver in &solvers {
+    for solver in &cli.solver {
         let split: Vec<&str> = solver.split(' ').collect();
 
         let cmd = SolverCmd {
@@ -250,7 +207,14 @@ fn main() {
         );
     }
 
-    let sexps = parse_file(inlines);
+    let sexps = parse_file(inlines).expect("failed to parse input");
+
+    for proc in &mut procs {
+        let outputs = send_sexps(sexps.as_slice(), proc);
+        for out in &outputs {
+            println!("{}", out);
+        }
+    }
 
     // println!("{:?}", sexps);
 
