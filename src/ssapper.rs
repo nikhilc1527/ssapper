@@ -1,7 +1,8 @@
 use std::{
     collections::HashSet,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{BufRead, Write},
+    io::{stdout, BufRead, Write},
+    process::exit,
 };
 
 use peg::str::LineCol;
@@ -41,7 +42,7 @@ pub fn parse_file<T: BufRead>(
 
     for line in inlines.lines() {
         linenum += 1;
-        println!("parsing line {}", linenum);
+        // println!("parsing line {}", linenum);
 
         let line = line.unwrap();
 
@@ -64,7 +65,7 @@ pub fn parse_file<T: BufRead>(
 
             if line_has_stuff && par_balance == 0 {
                 line_has_stuff = false;
-
+                // (echo "<<DONE>>")
                 let sexp = match parse(&running[..=ind]) {
                     Ok(x) => x,
                     Err(mut not_ok) => {
@@ -113,13 +114,20 @@ fn is_response_needed(sexp: &Sexp) -> bool {
 
 pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc, writer: &mut Box<dyn Write>) {
     // let mut responses = Vec::new();
+    // somehow sending input and getting no error, while just raw z3 is getting error on same input
+    // minimal example: testing_inputs/stainless_benchmarks/cvc4-NA-913.smt2
     for s in sexps {
         proc.send(&s.sexp);
         let res = proc.get_response(|s| s.to_string());
         if is_response_needed(&s.sexp) {
+            let out_str = res.expect("failed to get response from proc");
+            if out_str.starts_with("(e") {
+                println!("failed on {:?}", s.sexp);
+                let _ = stdout().flush();
+                exit(1);
+            }
             // responses.push(res.expect("failed to get response from proc"));
-            writeln!(writer, "{}", res.expect("failed to get response from proc"))
-                .expect("couldnt write to file");
+            writeln!(writer, "{}", out_str).expect("couldnt write to file");
         }
     }
     // responses
