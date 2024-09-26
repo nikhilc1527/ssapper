@@ -15,20 +15,15 @@ use serde::{Deserialize, Serialize};
 pub struct HashedSexp {
     hash: u64,
     sexp: Sexp,
-    sexp_str: String,
 }
 
 impl HashedSexp {
-    fn new(prev_hash: u64, sexp: Sexp, sexp_str: String) -> Self {
+    fn new(prev_hash: u64, sexp: Sexp) -> Self {
         let mut hasher = DefaultHasher::new();
         prev_hash.hash(&mut hasher);
         sexp.hash(&mut hasher);
         let hash = hasher.finish();
-        Self {
-            hash,
-            sexp,
-            sexp_str,
-        }
+        Self { hash, sexp }
     }
 }
 
@@ -78,8 +73,8 @@ pub fn parse_file<T: BufRead>(
                 };
 
                 match res.last() {
-                    Some(s) => res.push(HashedSexp::new(s.hash, sexp, running[..=ind].to_string())),
-                    None => res.push(HashedSexp::new(0, sexp, running[..=ind].to_string()))
+                    Some(s) => res.push(HashedSexp::new(s.hash, sexp)),
+                    None => res.push(HashedSexp::new(0, sexp)),
                 }
 
                 running = running[ind + 1..].to_string();
@@ -96,7 +91,7 @@ pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Vec<String> {
         proc.send(&s.sexp);
         let res = proc.get_response(|s| s.to_string());
         let out_str = res.expect("failed to get response from proc");
-        if out_str.len() > 0 {
+        if !out_str.is_empty() {
             responses.push(out_str);
         }
     }

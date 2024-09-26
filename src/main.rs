@@ -1,4 +1,6 @@
 mod ssapper;
+
+#[cfg(test)]
 mod tests;
 
 use std::{
