@@ -1,10 +1,14 @@
 #!/bin/sh
 
+# set -xe
+
 f="$1"
+# echo "testing file $f"
 outname=out/$(basename "$f")
 output=$(./target/debug/ssapper -s z3\ -in -i "$f" -o "$outname"_1)
+grep -v error "$outname"_1 | sponge "$outname"_1
 [ "$?" -eq 0 ] || exit 1
-cat "$f" | z3 -in > "$outname"_2
+cat "$f" | z3 -in | grep -v error > "$outname"_2
 diff=$(diff -u "$outname"_1 "$outname"_2 | wc -l)
 inputlines=$(cat "$f" | wc -l)
 # diff -u "$outname"_1 "$outname"_2

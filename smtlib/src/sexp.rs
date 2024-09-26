@@ -9,10 +9,10 @@
 use std::fmt;
 
 use peg::str::LineCol;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash, Deserialize)]
 pub enum Atom {
     I(usize),
     S(String),
@@ -22,7 +22,7 @@ impl Atom {
     /// Return the string value of self, if it is a string.
     pub fn s(&self) -> Option<&str> {
         if let Self::S(s) = self {
-            Some(s)
+            Some(&s)
         } else {
             None
         }
@@ -31,7 +31,7 @@ impl Atom {
 
 /// An s-expression which also tracks comments.
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Hash, Deserialize)]
 pub enum Sexp {
     Atom(Atom),
     Comment(String),
@@ -75,13 +75,7 @@ impl fmt::Display for Atom {
         match self {
             Atom::I(i) => write!(f, "{i}"),
             Atom::S(s) => {
-                if s.contains([' ', '\"', '\'']) {
-                    write!(f, "|{s}|")
-                } else if s.contains('|') {
-                    write!(f, "\"{s}\"")
-                } else {
-                    write!(f, "{s}")
-                }
+                write!(f, "{s}")
             }
         }
     }
@@ -163,12 +157,6 @@ grammar parser() for str {
   rule whitespace() = [' ' | '\t' | '\n' | '\r']
   rule _ = whitespace()*
 
-  rule quoted_atom() -> Atom
-  = "\"" s:$([^'"']*) "\"" { Atom::S(s.to_string()) }
-
-  rule pipe_quoted_atom() -> Atom
-  = "|" s:$([^'|']*) "|" { Atom::S(s.to_string()) }
-
   rule unquoted_atom() -> Atom
   = s:$(ident()) { Atom::S(s.to_string()) }
 
@@ -176,9 +164,7 @@ grammar parser() for str {
   = i:$(['0'..='9']+) { Atom::I(i.parse().unwrap()) }
 
   rule atom() -> Sexp
-  = s:(quoted_atom() /
-       pipe_quoted_atom() /
-       unquoted_atom() /
+  = s:(unquoted_atom() /
        int_atom()) { Sexp::Atom(s) }
 
   rule comment() -> Sexp

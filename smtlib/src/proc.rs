@@ -96,7 +96,7 @@ pub enum SolverError {
     Killed,
     /// empty output
     #[error("empty output")]
-    EmptyOutput
+    EmptyOutput,
 }
 
 type Result<T> = std::result::Result<T, SolverError>;
@@ -207,7 +207,7 @@ impl SmtProc {
 
     /// sends raw string to process
     pub fn send_str(&mut self, data: &str) {
-        writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
+        write!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
     }
 
     /// Low-level API to send the solver a command that expects a response,
@@ -322,7 +322,8 @@ impl SmtProc {
     /// Low-level mechanism to get a response. Note that this needs to be issued
     /// after each query that returns a response, since it sends a marker and
     /// waits for the solver to reach that marker.
-    /* CHANGED */ pub fn get_response<F, T>(&mut self, cb: F) -> Result<T>
+    /* CHANGED */
+    pub fn get_response<F, T>(&mut self, cb: F) -> Result<T>
     where
         F: FnOnce(&str) -> T,
     {

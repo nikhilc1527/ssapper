@@ -1,17 +1,18 @@
 mod ssapper;
+mod tests;
 
 use std::{
-    borrow::BorrowMut,
-    env,
     fs::File,
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
+    process::exit,
 };
 
 extern crate clap;
 extern crate colored;
 extern crate peg;
 extern crate rayon;
+extern crate serde;
 extern crate smtlib;
 
 use clap::Parser;
@@ -140,17 +141,25 @@ use ssapper::{parse_file, send_sexps};
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Optional name to operate on
-    name: Option<String>,
-
+    /// input to solvers (leave empty for stdin)
     #[arg(short, long)]
     inputfile: Option<PathBuf>,
 
+    /// output from solvers (leave empty for stdout)
     #[arg(short, long)]
     outputfile: Option<PathBuf>,
 
+    /// one or more solvers to run - each should be specified to take input from stdin
     #[arg(short, long)]
     solver: Vec<String>,
+
+    /// whether to run incrementally or not
+    #[arg(long, default_value_t = false)]
+    incremental: bool,
+
+    /// take output of first solver to finish instead of waiting for all solvers to finish
+    #[arg(long, default_value_t = false)]
+    take_first: bool,
 
     /// Turn debugging information on
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -158,6 +167,19 @@ struct Cli {
 }
 
 fn main() {
+    // let mut proc = SmtProc::new(
+    //     SolverCmd {
+    //         cmd: "z3".to_string(),
+    //         args: vec!["-in".to_string()],
+    //         options: vec![],
+    //     },
+    //     None,
+    // )
+    // .unwrap();
+    // proc.send_str("(check-sat)");
+    // let resp = proc.get_response(|s| s.to_string()).unwrap();
+    // println!("{}", resp);
+    // exit(1);
     // setup solvers
     let cli = Cli::parse();
 
@@ -185,11 +207,11 @@ fn main() {
         // also assuming that input of command is well-formed
 
         procs.push(
-            SmtProc::new(cmd, None).unwrap_or_else(|_| panic!("failed to run solver {}", solver)),
+            SmtProc::new(cmd, None)
+                .unwrap_or_else(|_| panic!("failed to start solver command {}", solver)),
         );
     }
 
-    println!("finished reading cli");
     let sexps = parse_file(inlines).expect("failed to parse input");
 
     let mut output_writer: Box<dyn Write> = match cli.outputfile {
@@ -199,13 +221,11 @@ fn main() {
         )),
     };
 
-    println!("finished parsing");
     for proc in &mut procs {
-        send_sexps(sexps.as_slice(), proc, &mut output_writer);
-        // let outputs = send_sexps(sexps.as_slice(), proc, output_writer.borrow_mut());
-        // for out in &outputs {
-        //     writeln!(output_writer, "{}", out).expect("couldnt write to output");
-        // }
+        let outputs = send_sexps(sexps.as_slice(), proc);
+        for out in &outputs {
+            writeln!(output_writer, "{}", out).expect("couldnt write to output");
+        }
     }
 
     // println!("{:?}", sexps);
