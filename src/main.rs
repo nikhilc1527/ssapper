@@ -5,7 +5,6 @@ use std::{
     fs::File,
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
-    process::exit,
 };
 
 extern crate clap;
@@ -17,31 +16,10 @@ extern crate smtlib;
 
 use clap::Parser;
 
-use rayon::prelude::*;
+// use rayon::prelude::*;
 
 use smtlib::{conf::SolverCmd, proc::SmtProc};
 use ssapper::{parse_file, send_sexps};
-
-// struct Logging {
-//     outfile: Option<BufWriter<File>>,
-// }
-
-// impl Logging {
-//     fn new(out: Option<&String>) -> Logging {
-//         let writer = out.map(|outfilename| BufWriter::new(File::create(outfilename).unwrap()));
-
-//         Logging { outfile: writer }
-//     }
-
-//     fn log(&mut self, s: &str) {
-//         match &mut (self.outfile) {
-//             Some(file) => {
-//                 file.write_all(s.as_bytes()).unwrap();
-//             }
-//             None => (),
-//         }
-//     }
-// }
 
 // #[derive(Debug, Clone)]
 // struct Status(
@@ -90,54 +68,6 @@ use ssapper::{parse_file, send_sexps};
 //     for_all_par(procs, f)
 // }
 
-// #[derive(Debug)]
-// struct Cache(HashMap<Sexp, Vec<Status>>); // sexp sent, responses
-
-// fn handle_sexp(
-//     sexp_str: &str,
-//     _linenum: usize,
-//     _running_line: usize,
-//     procs: &mut [SmtProc],
-//     logger: &mut Logging,
-//     cache: Option<Cache>,
-// ) -> Result<Cache, peg::error::ParseError<LineCol>> {
-//     let sexp = parse(sexp_str)?;
-//     let get_response = is_response_needed(&sexp);
-//     let mut cached = None;
-//     if let Some(cache) = &cache {
-//         let Cache(caches) = cache;
-
-//         if let Some(resp) = caches.get(&sexp) {
-//             cached = Some(resp.clone());
-//         }
-//     }
-
-//     let res = match &cached {
-//         Some(resp) => resp.clone(),
-//         None => send_all(&sexp, procs, get_response),
-//     };
-//     if get_response {
-//         // logger.log(&format!("line {}, response to {}\n", linenum, sexp_str));
-//         for r in &res {
-//             let Status(_i, _dur, s) = r;
-//             // logger.log(&format!("{}th solver took {:?}:\n{}\n", i + 1, dur, s));
-//             logger.log(&format!("{s}\n"));
-//         }
-//     }
-
-//     if !get_response {
-//         Ok(Cache(HashMap::new()))
-//     } else {
-//         let Cache(mut v) = cache.unwrap_or(Cache(HashMap::new()));
-
-//         if cached.is_none() {
-//             v.insert(sexp, res);
-//         }
-
-//         Ok(Cache(v))
-//     }
-// }
-
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -167,19 +97,6 @@ struct Cli {
 }
 
 fn main() {
-    // let mut proc = SmtProc::new(
-    //     SolverCmd {
-    //         cmd: "z3".to_string(),
-    //         args: vec!["-in".to_string()],
-    //         options: vec![],
-    //     },
-    //     None,
-    // )
-    // .unwrap();
-    // proc.send_str("(check-sat)");
-    // let resp = proc.get_response(|s| s.to_string()).unwrap();
-    // println!("{}", resp);
-    // exit(1);
     // setup solvers
     let cli = Cli::parse();
 
@@ -227,15 +144,4 @@ fn main() {
             writeln!(output_writer, "{}", out).expect("couldnt write to output");
         }
     }
-
-    // println!("{:?}", sexps);
-
-    // if let Some(infilename) = infilename {
-    //     let s = format!(
-    //         "successfully ran input file {} in {:?}",
-    //         infilename, prog_dur
-    //     )
-    //     .green();
-    //     println!("{}", s);
-    // }
 }

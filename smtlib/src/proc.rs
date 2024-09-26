@@ -147,8 +147,8 @@ impl SmtProc {
     /// The optional `tee` argument redirects all SMT output to a file, for
     /// debugging purposes.
     pub fn new(mut cmd: SolverCmd, tee: Option<&Path>) -> Result<Self> {
-        // cmd.option("produce-models", "true");
-        // cmd.option("produce-unsat-assumptions", "true");
+        cmd.option("produce-models", "true");
+        cmd.option("produce-unsat-assumptions", "true");
         let mut child = Command::new(OsStr::new(&cmd.cmd))
             .args(cmd.args.iter().map(OsString::from))
             .stdin(Stdio::piped())
