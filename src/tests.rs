@@ -68,7 +68,6 @@ fn test_file(infile: String) {
     )
     .expect("couldnt start smt proc");
     let resp = crate::ssapper::send_sexps(parsed.as_slice(), &mut proc);
-    // let resp: Vec<String> = resp.into_iter().filter(|s| s.contains("\n")).collect();
     let resp_str = resp.join("\n") + "\n";
 
     let error_filter = |s: String| {
@@ -85,24 +84,28 @@ fn test_file(infile: String) {
 
 #[test]
 pub fn test_integration() {
-    // two of the longest stainless files
+    // two of the longest stainless files, takes around 3 seconds total
     let infiles = vec![
         "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
         "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
-        // "./testing_inputs/stainless_benchmarks/cvc4-NA-67.smt2",
     ];
     for infile in infiles {
         test_file(infile.to_string());
     }
 }
 
+use rayon::prelude::*;
+
 #[test]
 #[ignore = "takes too long, only run if you have the time"]
 pub fn test_integration_full_stainless() {
     let paths = std::fs::read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
-    for path in paths {
-        let infile = path.unwrap().path().display().to_string();
-        test_file(infile);
-    }
+    let paths_vec: Vec<String> = paths
+        .map(|path| path.unwrap().path().display().to_string())
+        .collect();
+
+    paths_vec.par_iter().for_each(|infile| {
+        test_file(infile.to_string());
+    });
 }
