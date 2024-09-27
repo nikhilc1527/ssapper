@@ -1,3 +1,6 @@
+// #![feature(test)]
+// extern crate test;
+
 mod ssapper;
 
 #[cfg(test)]
@@ -83,20 +86,20 @@ struct Cli {
     outputfile: Option<PathBuf>,
 
     /// one or more solvers to run - each should be specified to take input from stdin
-    #[arg(short, long)]
+    #[arg(short, long, required=true)]
     solver: Vec<String>,
 
-    /// whether to run incrementally or not
+    /// run solvers incrementally
     #[arg(long, default_value_t = false)]
     incremental: bool,
 
     /// take output of first solver to finish instead of waiting for all solvers to finish
-    #[arg(long, default_value_t = false)]
+    #[arg(short, long, default_value_t = false)]
     take_first: bool,
 
-    /// Turn debugging information on
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    debug: u8,
+    /// db file to use as cache (leave empty for none)
+    #[arg(short, long)]
+    cache: Option<String>,
 }
 
 fn main() {

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     hash::{DefaultHasher, Hash, Hasher},
     io::BufRead,
     time::{Duration, Instant},
@@ -141,7 +140,6 @@ pub fn open_db() -> Result<Connection> {
 
 pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Result<Vec<String>> {
     let mut responses = Vec::new();
-    let mut responses_map = HashMap::new();
     let mut total_time_taken = Duration::from_micros(0);
 
     for s in sexps {
@@ -154,7 +152,6 @@ pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Result<Vec<String
         // we can also (maybe?) try to get outputs asynchronously from sending inputs, so that there is minimal overhead when running the process and the performance benchmark can be as accurate as possible and also to make the overall thing faster
         if !res.is_empty() {
             responses.push(res.to_string());
-            responses_map.insert(s, res.to_string());
         }
     }
     Ok(responses)
@@ -169,13 +166,13 @@ pub fn send_sexps_with_cache(
     let mut total_time_taken = Duration::from_micros(0);
 
     for s in sexps {
-        // TODO: since we are always running each statement anyways, caching doesnt actually improve the performance at all yet. it will only improve performance once we are able to do these 2 things asynchronously
+        // TODO: since we are always running each statement anyways, caching doesnt actually 
+        // improve the performance at all yet
+
         let start_time = Instant::now();
+        proc.send(&s.sexp);
         let res = proc.get_response(|s| s.to_string())?;
         total_time_taken += Instant::now().duration_since(start_time);
-        if !res.is_empty() {
-            responses.push((s, res.to_string(), true));
-        }
 
         let mut query_stmt =
             conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
@@ -188,12 +185,13 @@ pub fn send_sexps_with_cache(
                 responses.push((s, resp.to_string(), false));
             }
         } else {
-            proc.send(&s.sexp);
+            if !res.is_empty() {
+                responses.push((s, res.to_string(), true));
+            }
         };
-
-        // TODO: dont try to get request each time, only get request when something is printed (need to figure out when that is)
-        // we can also (maybe?) try to get outputs asynchronously from sending inputs, so that there is minimal overhead when running the process and the performance benchmark can be as accurate as possible and also to make the overall thing faster
     }
+    // we're never going to need to update db while sending sexps, so we can send all of them at
+    // once at the end
     let tx = conn.transaction()?;
     {
         let mut stmt =
