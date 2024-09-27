@@ -39,10 +39,10 @@ pub fn test_run_solver() {
     let sexp: Vec<crate::ssapper::HashedSexp> = serde_json::from_str("[{\"hash\":2405905473350807012,\"sexp\":{\"List\":[{\"Atom\":{\"S\":\"check-sat\"}}]}},{\"hash\":5811564076829442140,\"sexp\":{\"List\":[{\"Atom\":{\"S\":\"check-sat\"}}]}}]").expect("couldnt deserialize hashed sexp");
 
     let outputs = crate::ssapper::send_sexps(sexp.as_slice(), &mut proc);
-    assert_eq!(outputs, vec!["sat", "sat"]);
+    assert_eq!(outputs, Ok(vec!["sat".to_string(), "sat".to_string()]));
 }
 
-fn test_file(infile: String) {
+fn test_file(infile: String, conn: &mut Connection) {
     let cmd = std::str::from_utf8(
         std::process::Command::new("z3")
             .arg(&infile)
@@ -67,7 +67,10 @@ fn test_file(infile: String) {
         None,
     )
     .expect("couldnt start smt proc");
-    let resp = crate::ssapper::send_sexps(parsed.as_slice(), &mut proc);
+    let resp = match crate::ssapper::send_sexps_with_cache(parsed.as_slice(), &mut proc, conn) {
+        Err(r) => panic!("error sending sexps: {:?}", r),
+        Ok(o) => o,
+    };
     let resp_str = resp.join("\n") + "\n";
 
     let error_filter = |s: String| {
@@ -84,28 +87,37 @@ fn test_file(infile: String) {
 
 #[test]
 pub fn test_integration() {
-    // two of the longest stainless files, takes around 3 seconds total
+    let mut conn = open_db().expect("couldnt open db");
+
+    // two of the longest stainless files, takes around 3 seconds total (when not caching)
     let infiles = vec![
+        "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
         "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
         "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
     ];
     for infile in infiles {
-        test_file(infile.to_string());
+        test_file(infile.to_string(), &mut conn);
     }
 }
 
-use rayon::prelude::*;
+use rusqlite::Connection;
 
+use crate::ssapper::open_db;
+
+// on my machine: took 421 seconds when building cache, 160 seconds when cache already built
+//                     ~300 seconds when not using caching at all
 #[test]
 #[ignore = "takes too long, only run if you have the time"]
 pub fn test_integration_full_stainless() {
     let paths = std::fs::read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
+    let mut conn = open_db().expect("couldnt open db");
+
     let paths_vec: Vec<String> = paths
         .map(|path| path.unwrap().path().display().to_string())
         .collect();
 
-    paths_vec.par_iter().for_each(|infile| {
-        test_file(infile.to_string());
+    paths_vec.iter().for_each(|infile| {
+        test_file(infile.to_string(), &mut conn);
     });
 }

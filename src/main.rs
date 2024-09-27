@@ -15,13 +15,14 @@ extern crate peg;
 extern crate rayon;
 extern crate serde;
 extern crate smtlib;
+extern crate thiserror;
 
 use clap::Parser;
 
 // use rayon::prelude::*;
 
 use smtlib::{conf::SolverCmd, proc::SmtProc};
-use ssapper::{parse_file, send_sexps};
+use ssapper::{open_db, parse_file, send_sexps_with_cache};
 
 // #[derive(Debug, Clone)]
 // struct Status(
@@ -140,8 +141,11 @@ fn main() {
         )),
     };
 
+    let mut conn = open_db().expect("couldnt open db");
+
     for proc in &mut procs {
-        let outputs = send_sexps(sexps.as_slice(), proc);
+        let outputs =
+            send_sexps_with_cache(sexps.as_slice(), proc, &mut conn).expect("couldnt send sexps");
         for out in &outputs {
             writeln!(output_writer, "{}", out).expect("couldnt write to output");
         }
