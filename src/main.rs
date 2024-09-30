@@ -8,7 +8,7 @@ mod tests;
 
 use std::{
     fs::File,
-    io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
+    io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
     path::PathBuf,
 };
 
@@ -86,7 +86,7 @@ struct Cli {
     outputfile: Option<PathBuf>,
 
     /// one or more solvers to run - each should be specified to take input from stdin
-    #[arg(short, long, required=true)]
+    #[arg(short, long, required = true)]
     solver: Vec<String>,
 
     /// run solvers incrementally
@@ -144,13 +144,14 @@ fn main() {
         )),
     };
 
-    let mut conn = open_db().expect("couldnt open db");
+    let mut conn = open_db("/tmp/test_cache3.db").expect("couldnt open db");
 
     for proc in &mut procs {
         let outputs =
             send_sexps_with_cache(sexps.as_slice(), proc, &mut conn).expect("couldnt send sexps");
+
         for out in &outputs {
-            writeln!(output_writer, "{}", out).expect("couldnt write to output");
+            writeln!(output_writer, "output: {}", out).expect("couldnt write to output");
         }
     }
 }

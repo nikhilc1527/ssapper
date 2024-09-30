@@ -1,13 +1,14 @@
-use super::*;
 use super::ssapper::*;
-use std::*;
+use super::*;
 use serde_json::*;
+use std::*;
 
 use rusqlite::Connection;
 use std::fs::*;
-use std::str::*;
 use std::process::*;
+use std::str::*;
 
+/// this test relies on the hash function being stable, which according to rust docs its not
 #[test]
 fn parse_test() {
     let in_str = r"
@@ -20,9 +21,8 @@ fn parse_test() {
     assert_eq!(parsed, Ok(expected));
 
     let in_str2 = r"
-(check-sat) (check-sat)
-; this comment shouldnt affect anything
-
+(check-sat) (check-sat) ; (check-sat) should not be counted
+; this comment shouldnt affect parsing
 
 
 
@@ -64,8 +64,7 @@ fn test_file(infile: String, conn: Option<&mut Connection>) {
     .expect("failed to construct string out of output")
     .to_string();
 
-    let reader =
-        BufReader::new(File::open(&infile).expect("failed to open testing file"));
+    let reader = BufReader::new(File::open(&infile).expect("failed to open testing file"));
     let parsed = parse_file(reader).expect("failed to parse file");
 
     let mut proc = SmtProc::new(
@@ -77,54 +76,88 @@ fn test_file(infile: String, conn: Option<&mut Connection>) {
         None,
     )
     .expect("couldnt start smt proc");
-    let f = if let Some(conn) = conn {
-        send_sexps_with_cache(parsed.as_slice(), &mut proc, conn) 
+    let resp = (if let Some(conn) = conn {
+        send_sexps_with_cache(parsed.as_slice(), &mut proc, conn)
     } else {
         send_sexps(parsed.as_slice(), &mut proc)
-    };
+    })
+    .expect("error sending sexps");
 
-    let resp = match f {
-        Err(r) => panic!("error sending sexps: {:?}", r),
-        Ok(o) => o,
-    };
     let resp_str = resp.join("\n") + "\n";
 
     let error_filter = |s: String| {
         s.lines()
-            .filter(|s| !s.contains("error"))
+            // .filter(|s| !s.contains("error"))
+            .map(|line| {
+                line.split(" ")
+                    .map(|word| {
+                        (if word.parse::<u32>().is_ok() {
+                            "LINE"
+                        } else {
+                            word
+                        })
+                        .to_string()
+                    })
+                    .reduce(|s1, s2| s1 + " " + &s2)
+                    .unwrap()
+            })
             .collect::<String>()
     };
 
     let cmd = error_filter(cmd);
     let resp_str = error_filter(resp_str);
 
+    println!("cmd: {}", cmd);
+    println!("resp_str: {}", resp_str);
+
     assert_eq!(cmd, resp_str);
 }
+
+const INFILES: &[&str] = &[
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1001.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1172.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
+    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
+    // "testing_inputs/handmade/in1",
+    // "testing_inputs/ALIA_incremental/UltimateBuchiAutomizer/java_AG313-alloca_true-termination.c.i.smt2",
+    // "testing_inputs/ALIA_incremental/UltimateBuchiAutomizer/Urban-2013WST-Fig2-alloca_true-termination.c.i.smt2",
+    "testing_inputs/non-incremental/QF_S/20230329-woorpje-lu/track01/01_track_100.smt2",
+];
 
 #[test]
 pub fn test_integration_nocache() {
     // two of the longest stainless files, takes around 3 seconds total (when not caching)
-    let infiles = vec![
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
-    ];
-    for infile in infiles {
+    for infile in INFILES {
         test_file(infile.to_string(), None);
     }
 }
 
 #[test]
-pub fn test_integration_cache() {
-    let mut conn = open_db().expect("couldnt open db");
+pub fn test_integration_cache_empty() {
+    let cache_file = "/tmp/test_cache2.db";
+
+    let _ = remove_file(cache_file);
+
+    let mut conn = open_db(cache_file).expect("couldnt open db");
 
     // two of the longest stainless files, takes around 3 seconds total (when not caching)
-    let infiles = vec![
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
-        "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
-    ];
-    for infile in infiles {
+    for infile in INFILES {
+        test_file(infile.to_string(), Some(&mut conn));
+    }
+}
+
+#[test]
+pub fn test_integration_cache_built() {
+    let cache_file = "/tmp/test_cache1.db";
+
+    let mut conn = open_db(cache_file).expect("couldnt open db");
+
+    // two of the longest stainless files, takes around 3 seconds total (when not caching)
+    for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
 }
@@ -134,9 +167,11 @@ pub fn test_integration_cache() {
 #[test]
 #[ignore = "takes too long, only run if you have the time"]
 pub fn test_integration_full_stainless() {
+    let cache_file = "/tmp/test_cache3.db";
+
     let paths = read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
-    let mut conn = open_db().expect("couldnt open db");
+    let mut conn = open_db(cache_file).expect("couldnt open db");
 
     let paths_vec: Vec<String> = paths
         .map(|path| path.unwrap().path().display().to_string())

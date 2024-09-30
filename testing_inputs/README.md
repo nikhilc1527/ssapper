@@ -13,3 +13,7 @@ This directory contains hand written tests for quick testing. A lot of them are 
 # QF_NIA
 http://smt-lib.loria.fr/zip/QF_NIA.zip
 got the link from https://github.com/eth-sri/fastsmt
+
+# SMT-LIB Benchmarks
+[incremental](https://zenodo.org/records/11186591)
+[non-incremental](https://zenodo.org/records/11061097)

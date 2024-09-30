@@ -1,15 +1,19 @@
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::BufRead,
-    time::{Duration, Instant},
+    path::Path,
 };
 
+use futures::executor::block_on;
 use thiserror::Error;
 
-use rusqlite::{params, Connection};
+use async_rusqlite::{
+    rusqlite::{params, Error as RusqliteError},
+    Connection, ConnectionBuilder,
+};
 use smtlib::{
     proc::SmtProc,
-    sexp::{parse, Sexp},
+    sexp::{parse, Atom, Sexp},
 };
 
 use serde::{Deserialize, Serialize};
@@ -25,7 +29,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("rusqlite database error")]
-    Rusqlite(#[from] rusqlite::Error),
+    Rusqlite(#[from] RusqliteError),
 
     #[error("solver error")]
     Solver(#[from] smtlib::proc::SolverError),
@@ -122,31 +126,41 @@ pub fn parse_file<T: BufRead>(inlines: T) -> Result<Vec<HashedSexp>> {
     Ok(res)
 }
 
-pub fn open_db() -> Result<Connection> {
-    let conn = Connection::open("/tmp/solver_cache.db")?;
+pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
+    let conn =
+        block_on(ConnectionBuilder::new().open(path)).expect("couldnt open connection to db");
 
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF")?;
+    conn.call(|conn| {
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS computations (
+                 hash TEXT PRIMARY KEY,
+                 result_value TEXT NOT NULL
+                 )",
+            [],
+        )?;
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS computations (
-            hash TEXT PRIMARY KEY,
-            result_value TEXT NOT NULL
-        )",
-        [],
-    )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+            [],
+        )?;
+
+        Ok::<(), RusqliteError>(())
+    });
 
     Ok(conn)
 }
 
+#[allow(dead_code)]
 pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Result<Vec<String>> {
     let mut responses = Vec::new();
-    let mut total_time_taken = Duration::from_micros(0);
 
     for s in sexps {
-        let start_time = Instant::now();
+        if s.sexp == Sexp::List(vec![Sexp::Atom(Atom::S("exit".to_string()))]) {
+            break;
+        }
         proc.send(&s.sexp);
         let res = proc.get_response(|s| s.to_string())?;
-        total_time_taken += Instant::now().duration_since(start_time);
 
         // TODO: dont try to get request each time, only get request when something is printed (need to figure out when that is)
         // we can also (maybe?) try to get outputs asynchronously from sending inputs, so that there is minimal overhead when running the process and the performance benchmark can be as accurate as possible and also to make the overall thing faster
@@ -157,54 +171,69 @@ pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Result<Vec<String
     Ok(responses)
 }
 
-pub fn send_sexps_with_cache(
+pub async fn send_sexps_with_cache(
     sexps: &[HashedSexp],
     proc: &mut SmtProc,
     conn: &mut Connection,
 ) -> Result<Vec<String>> {
     let mut responses = Vec::new();
-    let mut total_time_taken = Duration::from_micros(0);
+    // let mut total_time_taken = Duration::from_micros(0);
+    let mut backlog: Vec<&HashedSexp> = Vec::new();
+    let mut need_to_cache = false;
 
     for s in sexps {
-        // TODO: since we are always running each statement anyways, caching doesnt actually 
+        // TODO: since we are always running each statement anyways, caching doesnt actually
         // improve the performance at all yet
 
-        let start_time = Instant::now();
-        proc.send(&s.sexp);
-        let res = proc.get_response(|s| s.to_string())?;
-        total_time_taken += Instant::now().duration_since(start_time);
+        if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
+            break;
+        }
 
-        let mut query_stmt =
-            conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
-        let cached_result: Option<String> = query_stmt
-            .query_row(params![s.hash.to_string()], |row| row.get(0))
-            .ok();
+        backlog.push(s);
+
+        let cached_result = conn
+            .call(|conn| {
+                let mut query_stmt =
+                    conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
+                let cached_result: Option<String> = query_stmt
+                    .query_row(params![s.hash.to_string()], |row| row.get(0))
+                    .ok();
+                Ok(cached_result)
+            })
+            .await?;
 
         if let Some(resp) = cached_result {
-            if !resp.is_empty() {
-                responses.push((s, resp.to_string(), false));
-            }
+            responses.push((s, resp.to_string(), false));
         } else {
-            if !res.is_empty() {
-                responses.push((s, res.to_string(), true));
+            for b in &backlog {
+                proc.send(&b.sexp);
+                let res = proc.get_response(|s| s.to_string())?;
+                responses.push((b, res.to_string(), true));
+                need_to_cache = true;
             }
+            backlog.clear();
         };
     }
     // we're never going to need to update db while sending sexps, so we can send all of them at
     // once at the end
-    let tx = conn.transaction()?;
-    {
-        let mut stmt =
-            tx.prepare("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
-        for (s, resp, need_to_cache) in &responses {
-            if *need_to_cache {
-                stmt.execute(params![s.hash.to_string(), resp.to_string()])?;
+    if need_to_cache {
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+            for (s, resp, n) in &responses {
+                if *n {
+                    stmt.execute(params![s.hash.to_string(), resp.to_string()])?;
+                }
             }
         }
+        tx.commit()?;
     }
-    tx.commit()?;
-
-    let responses = responses.into_iter().map(|(_, r, _)| r).collect();
+    let responses = responses
+        .into_iter()
+        .map(|(_, r, _)| r)
+        .filter(|r| !r.is_empty())
+        .collect();
 
     Ok(responses)
 }

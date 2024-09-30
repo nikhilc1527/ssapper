@@ -157,6 +157,11 @@ grammar parser() for str {
   rule whitespace() = [' ' | '\t' | '\n' | '\r']
   rule _ = whitespace()*
 
+  rule quoted_atom() -> Atom
+  = "\"" s:$([^'"']*) "\"" { Atom::S(s.to_string()) }
+  rule pipe_quoted_atom() -> Atom
+  = "|" s:$([^'|']*) "|" { Atom::S(s.to_string()) }
+
   rule unquoted_atom() -> Atom
   = s:$(ident()) { Atom::S(s.to_string()) }
 
@@ -165,6 +170,8 @@ grammar parser() for str {
 
   rule atom() -> Sexp
   = s:(unquoted_atom() /
+       pipe_quoted_atom() /
+       quoted_atom() /
        int_atom()) { Sexp::Atom(s) }
 
   rule comment() -> Sexp
