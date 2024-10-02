@@ -114,18 +114,14 @@ fn test_file(infile: String, conn: Option<&mut Connection>) {
 }
 
 const INFILES: &[&str] = &[
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1001.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1172.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
-    // "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
-    // "testing_inputs/handmade/in1",
-    // "testing_inputs/ALIA_incremental/UltimateBuchiAutomizer/java_AG313-alloca_true-termination.c.i.smt2",
-    // "testing_inputs/ALIA_incremental/UltimateBuchiAutomizer/Urban-2013WST-Fig2-alloca_true-termination.c.i.smt2",
-    "testing_inputs/non-incremental/QF_S/20230329-woorpje-lu/track01/01_track_100.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1001.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1172.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
 ];
 
 #[test]

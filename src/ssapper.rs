@@ -4,13 +4,9 @@ use std::{
     path::Path,
 };
 
-use futures::executor::block_on;
+use rusqlite::{params, Connection, Error as RusqliteError};
 use thiserror::Error;
 
-use async_rusqlite::{
-    rusqlite::{params, Error as RusqliteError},
-    Connection, ConnectionBuilder,
-};
 use smtlib::{
     proc::SmtProc,
     sexp::{parse, Atom, Sexp},
@@ -127,26 +123,21 @@ pub fn parse_file<T: BufRead>(inlines: T) -> Result<Vec<HashedSexp>> {
 }
 
 pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
-    let conn =
-        block_on(ConnectionBuilder::new().open(path)).expect("couldnt open connection to db");
+    let conn = Connection::open(path).expect("couldnt open connection to db");
 
-    conn.call(|conn| {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF")?;
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS computations (
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF")?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS computations (
                  hash TEXT PRIMARY KEY,
                  result_value TEXT NOT NULL
                  )",
-            [],
-        )?;
+        [],
+    )?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
-            [],
-        )?;
-
-        Ok::<(), RusqliteError>(())
-    });
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+        [],
+    )?;
 
     Ok(conn)
 }
@@ -171,7 +162,7 @@ pub fn send_sexps(sexps: &[HashedSexp], proc: &mut SmtProc) -> Result<Vec<String
     Ok(responses)
 }
 
-pub async fn send_sexps_with_cache(
+pub fn send_sexps_with_cache(
     sexps: &[HashedSexp],
     proc: &mut SmtProc,
     conn: &mut Connection,
@@ -191,16 +182,11 @@ pub async fn send_sexps_with_cache(
 
         backlog.push(s);
 
-        let cached_result = conn
-            .call(|conn| {
-                let mut query_stmt =
-                    conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
-                let cached_result: Option<String> = query_stmt
-                    .query_row(params![s.hash.to_string()], |row| row.get(0))
-                    .ok();
-                Ok(cached_result)
-            })
-            .await?;
+        let mut query_stmt =
+            conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
+        let cached_result: Option<String> = query_stmt
+            .query_row(params![s.hash.to_string()], |row| row.get(0))
+            .ok();
 
         if let Some(resp) = cached_result {
             responses.push((s, resp.to_string(), false));

@@ -8,7 +8,7 @@ mod tests;
 
 use std::{
     fs::File,
-    io::{stdin, stdout, BufRead, BufReader, BufWriter, Read, Write},
+    io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
 };
 
