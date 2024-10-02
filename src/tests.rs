@@ -140,10 +140,11 @@ pub fn test_integration_cache_empty() {
 
     let mut conn = open_db(cache_file).expect("couldnt open db");
 
-    // two of the longest stainless files, takes around 3 seconds total (when not caching)
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
+
+    remove_file(cache_file).expect("couldnt remove cache file");
 }
 
 #[test]
@@ -152,10 +153,11 @@ pub fn test_integration_cache_built() {
 
     let mut conn = open_db(cache_file).expect("couldnt open db");
 
-    // two of the longest stainless files, takes around 3 seconds total (when not caching)
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
+
+    remove_file(cache_file).expect("couldnt remove cache file");
 }
 
 // on my machine: took 421 seconds when building cache, 160 seconds when cache already built
