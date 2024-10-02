@@ -2,6 +2,7 @@ use super::ssapper::*;
 use super::*;
 use serde_json::*;
 use std::*;
+use tempfile::NamedTempFile;
 
 use rusqlite::Connection;
 use std::fs::*;
@@ -134,30 +135,30 @@ pub fn test_integration_nocache() {
 
 #[test]
 pub fn test_integration_cache_empty() {
-    let cache_file = "/tmp/test_cache2.db";
+    let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let _ = remove_file(cache_file);
-
-    let mut conn = open_db(cache_file).expect("couldnt open db");
+    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
 
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
 
-    remove_file(cache_file).expect("couldnt remove cache file");
+    // drop cache_file
 }
 
 #[test]
 pub fn test_integration_cache_built() {
-    let cache_file = "/tmp/test_cache1.db";
+    let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = open_db(cache_file).expect("couldnt open db");
+    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
 
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
 
-    remove_file(cache_file).expect("couldnt remove cache file");
+    for infile in INFILES {
+        test_file(infile.to_string(), Some(&mut conn));
+    }
 }
 
 // on my machine: took 421 seconds when building cache, 160 seconds when cache already built
@@ -165,16 +166,19 @@ pub fn test_integration_cache_built() {
 #[test]
 #[ignore = "takes too long, only run if you have the time"]
 pub fn test_integration_full_stainless() {
-    let cache_file = "/tmp/test_cache3.db";
+    let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
     let paths = read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
-    let mut conn = open_db(cache_file).expect("couldnt open db");
+    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
 
     let paths_vec: Vec<String> = paths
         .map(|path| path.unwrap().path().display().to_string())
         .collect();
 
+    paths_vec.iter().for_each(|infile| {
+        test_file(infile.to_string(), Some(&mut conn));
+    });
     paths_vec.iter().for_each(|infile| {
         test_file(infile.to_string(), Some(&mut conn));
     });
