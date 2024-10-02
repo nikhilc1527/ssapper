@@ -7,3 +7,4 @@ Cargo.lock
 /testing_inputs/non-incremental
 /bla
 testing_inputs.tar.gz
+.*sync*
