@@ -53,6 +53,25 @@ pub fn test_run_solver() {
     assert_eq!(outputs, Ok(vec!["sat".to_string(), "sat".to_string()]));
 }
 
+fn error_filter(s: String) -> String {
+    s.lines()
+        // .filter(|s| !s.contains("error"))
+        .map(|line| {
+            line.split(" ")
+                .map(|word| {
+                    (if word.parse::<u32>().is_ok() {
+                        "LINE"
+                    } else {
+                        word
+                    })
+                    .to_string()
+                })
+                .reduce(|s1, s2| s1 + " " + &s2)
+                .unwrap()
+        })
+        .collect::<String>()
+}
+
 fn test_file(infile: String, conn: Option<&mut Connection>) {
     let cmd = from_utf8(
         Command::new("z3")
@@ -86,25 +105,6 @@ fn test_file(infile: String, conn: Option<&mut Connection>) {
 
     let resp_str = resp.join("\n") + "\n";
 
-    let error_filter = |s: String| {
-        s.lines()
-            // .filter(|s| !s.contains("error"))
-            .map(|line| {
-                line.split(" ")
-                    .map(|word| {
-                        (if word.parse::<u32>().is_ok() {
-                            "LINE"
-                        } else {
-                            word
-                        })
-                        .to_string()
-                    })
-                    .reduce(|s1, s2| s1 + " " + &s2)
-                    .unwrap()
-            })
-            .collect::<String>()
-    };
-
     let cmd = error_filter(cmd);
     let resp_str = error_filter(resp_str);
 
@@ -124,6 +124,42 @@ const INFILES: &[&str] = &[
     "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
 ];
+
+#[test]
+pub fn test_integration_external() {
+    for infile in INFILES {
+        let cmd_out1 = error_filter(
+            from_utf8(
+                Command::new("z3")
+                    .arg(&infile)
+                    .output()
+                    .expect("failed to run the actual z3")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 1")
+            .to_string(),
+        );
+
+        let cmd_out2 = error_filter(
+            from_utf8(
+                Command::new("./target/debug/ssapper")
+                    .arg("-s")
+                    .arg("z3 -in")
+                    .arg("-i")
+                    .arg(&infile)
+                    .output()
+                    .expect("failed to run cargo")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+
+        assert_eq!(cmd_out1, cmd_out2);
+    }
+}
 
 #[test]
 pub fn test_integration_nocache() {

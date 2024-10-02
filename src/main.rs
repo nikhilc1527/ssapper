@@ -15,7 +15,6 @@ use std::{
 extern crate clap;
 extern crate colored;
 extern crate peg;
-extern crate rayon;
 extern crate serde;
 extern crate smtlib;
 extern crate thiserror;
@@ -151,7 +150,7 @@ fn main() {
             send_sexps_with_cache(sexps.as_slice(), proc, &mut conn).expect("couldnt send sexps");
 
         for out in &outputs {
-            writeln!(output_writer, "output: {}", out).expect("couldnt write to output");
+            writeln!(output_writer, "{}", out).expect("couldnt write to output");
         }
     }
 }
