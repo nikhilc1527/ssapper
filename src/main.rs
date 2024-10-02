@@ -1,11 +1,6 @@
 // #![feature(test)]
 // extern crate test;
 
-mod ssapper;
-
-#[cfg(test)]
-mod tests;
-
 use std::{
     fs::File,
     io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},

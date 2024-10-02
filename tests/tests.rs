@@ -1,6 +1,10 @@
-use super::ssapper::*;
-use super::*;
+#![cfg(test)]
+
+use io::BufReader;
 use serde_json::*;
+use smtlib::conf::SolverCmd;
+use smtlib::proc::SmtProc;
+use ssapper::*;
 use std::*;
 use tempfile::NamedTempFile;
 
