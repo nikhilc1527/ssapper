@@ -2,9 +2,9 @@
 // extern crate test;
 
 use std::{
+    env,
     fs::File,
-    io::{stdin, stdout, BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
+    io::{stdin, BufRead, BufReader},
 };
 
 extern crate clap;
@@ -16,136 +16,70 @@ extern crate thiserror;
 
 use clap::Parser;
 
-// use rayon::prelude::*;
-
 use smtlib::{conf::SolverCmd, proc::SmtProc};
-use ssapper::{open_db, parse_file, send_sexps_with_cache};
+use ssapper::{open_db, parse_file, send_sexps, send_sexps_with_cache};
 
-// #[derive(Debug, Clone)]
-// struct Status(
-//     usize,    // index of solver
-//     Duration, // duration that solver took to solve
-//     String,   // response (in case of check-sat, get-model, etc)
-// );
-
-// fn for_all_par<F>(procs: &mut [SmtProc], f: F) -> Vec<Status>
-// where
-//     F: Fn(usize, &mut SmtProc) -> Status + std::marker::Sync,
-// {
-//     let responses = Mutex::new(Vec::new());
-//     procs.par_iter_mut().enumerate().for_each(|(i, p)| {
-//         let s = f(i, p);
-
-//         let mut rl = responses.lock().unwrap();
-//         rl.push(s);
-//     });
-
-//     responses.into_inner().unwrap()
-// }
-
-// fn send_all(sexp: &Sexp, procs: &mut [SmtProc], get_resp: bool) -> Vec<Status> {
-//     let f = |i: usize, p: &mut SmtProc| {
-//         let start = Instant::now();
-//         // begin timing
-
-//         p.send(sexp);
-//         let res = if get_resp {
-//             p.get_response(|s| s.to_string()).unwrap()
-//         } else {
-//             let r = p.get_response(|s| s.to_string());
-//             if let Err(SolverError::UnexpectedClose(msg)) = r {
-//                 println!("{}", format!("ERROR: {:?}", msg).magenta());
-//             }
-
-//             "".to_string()
-//         };
-
-//         // end timing
-//         let duration = start.elapsed();
-//         Status(i, duration, res)
-//     };
-
-//     for_all_par(procs, f)
-// }
-
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
+/// Z3-like CLI options
+#[derive(Parser, Debug)]
+#[command(name = "ssapper")]
+#[command(allow_hyphen_values = true)]
 struct Cli {
-    /// input to solvers (leave empty for stdin)
-    #[arg(short, long)]
-    inputfile: Option<PathBuf>,
-
-    /// output from solvers (leave empty for stdout)
-    #[arg(short, long)]
-    outputfile: Option<PathBuf>,
-
-    /// one or more solvers to run - each should be specified to take input from stdin
-    #[arg(short, long, required = true)]
-    solver: Vec<String>,
-
-    /// run solvers incrementally
-    #[arg(long, default_value_t = false)]
-    incremental: bool,
-
-    /// take output of first solver to finish instead of waiting for all solvers to finish
-    #[arg(short, long, default_value_t = false)]
-    take_first: bool,
-
-    /// db file to use as cache (leave empty for none)
-    #[arg(short, long)]
-    cache: Option<String>,
+    /// all options to forward to z3
+    #[arg(trailing_var_arg = true)]
+    opts: Vec<String>,
 }
 
-fn main() {
+// all options taken from env variables
+pub fn main() {
     // setup solvers
-    let cli = Cli::parse();
+    let opts = Cli::parse().opts;
 
-    let inlines: Box<dyn BufRead> = match cli.inputfile {
-        None => Box::new(stdin().lock()),
-        Some(filename) => Box::new(BufReader::new(
-            File::open(filename).expect("could not open file"),
-        )),
+    let (inlines, cmd): (Box<dyn BufRead>, SolverCmd) = {
+        match opts.iter().position(|x| x == "-in") {
+            None => (
+                Box::new(BufReader::new(
+                    File::open(opts.last().unwrap()).expect("could not open file"),
+                )),
+                SolverCmd {
+                    cmd: "z3".to_string(),
+                    args: {
+                        let mut o = opts.clone();
+                        o.pop();
+                        o.push("-in".to_string());
+                        o
+                    },
+                    options: vec![],
+                },
+            ),
+            Some(pos) => (
+                Box::new(stdin().lock()),
+                SolverCmd {
+                    cmd: "z3".to_string(),
+                    args: {
+                        let mut o = opts.clone();
+                        o[pos] = "-in".to_string();
+                        o
+                    },
+                    options: vec![],
+                },
+            ),
+        }
     };
-
-    let mut procs: Vec<SmtProc> = Vec::new();
-
-    for solver in &cli.solver {
-        let split: Vec<&str> = solver.split(' ').collect();
-
-        let cmd = SolverCmd {
-            cmd: split[0].to_string(),
-            args: split[1..split.len()]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            options: vec![],
-        };
-        // running commands straight from user input feels iffy
-        // also assuming that input of command is well-formed
-
-        procs.push(
-            SmtProc::new(cmd, None)
-                .unwrap_or_else(|_| panic!("failed to start solver command {}", solver)),
-        );
-    }
 
     let sexps = parse_file(inlines).expect("failed to parse input");
+    let conn = env::var("SSAPPER_CACHE_FILE")
+        .ok()
+        .map(|file| open_db(file).expect("couldnt open db"));
 
-    let mut output_writer: Box<dyn Write> = match cli.outputfile {
-        None => Box::new(BufWriter::new(stdout())),
-        Some(file) => Box::new(BufWriter::new(
-            File::create(file).expect("couldnt open output file"),
-        )),
-    };
+    let mut proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
-    let mut conn = open_db("/tmp/test_cache3.db").expect("couldnt open db");
+    let outputs = match conn {
+        Some(mut conn) => send_sexps_with_cache(sexps.as_slice(), &mut proc, &mut conn),
+        None => send_sexps(sexps.as_slice(), &mut proc),
+    }
+    .expect("couldnt send file to z3 instance");
 
-    for proc in &mut procs {
-        let outputs =
-            send_sexps_with_cache(sexps.as_slice(), proc, &mut conn).expect("couldnt send sexps");
-
-        for out in &outputs {
-            writeln!(output_writer, "{}", out).expect("couldnt write to output");
-        }
+    for out in outputs {
+        println!("{}", out);
     }
 }

@@ -13,8 +13,8 @@ path = "src/main.rs"
 test = false
 
 [[bin]]
-name = "ssapper2"
-path = "src/main.rs"
+name = "ssapper-tool"
+path = "src/tool.rs"
 test = false
 
 [lib]

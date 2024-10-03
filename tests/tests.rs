@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use env::set_var;
 use io::BufReader;
 use serde_json::*;
 use smtlib::conf::SolverCmd;
@@ -7,6 +8,8 @@ use smtlib::proc::SmtProc;
 use ssapper::*;
 use std::*;
 use tempfile::NamedTempFile;
+use time::Duration;
+use time::Instant;
 
 use rusqlite::Connection;
 use std::fs::*;
@@ -112,9 +115,6 @@ fn test_file(infile: String, conn: Option<&mut Connection>) {
     let cmd = error_filter(cmd);
     let resp_str = error_filter(resp_str);
 
-    println!("cmd: {}", cmd);
-    println!("resp_str: {}", resp_str);
-
     assert_eq!(cmd, resp_str);
 }
 
@@ -125,17 +125,29 @@ const INFILES: &[&str] = &[
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-733.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-736.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-737.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-738.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-10702.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
 ];
 
 #[test]
 pub fn test_integration_external() {
+    let mut times1 = Duration::from_secs(0);
+    let mut times2 = Duration::from_secs(0);
+    let mut times3 = Duration::from_secs(0);
+    let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
+    set_var("SSAPPER_CACHE_FILE", tmpdb.path());
+
     for infile in INFILES {
+        let time1 = Instant::now();
         let cmd_out1 = error_filter(
             from_utf8(
                 Command::new("z3")
-                    .arg(&infile)
+                    .arg(infile)
                     .output()
                     .expect("failed to run the actual z3")
                     .stdout
@@ -145,15 +157,14 @@ pub fn test_integration_external() {
             .to_string(),
         );
 
+        let time2 = Instant::now();
+
         let cmd_out2 = error_filter(
             from_utf8(
                 Command::new("./target/debug/ssapper")
-                    .arg("-s")
-                    .arg("z3 -in")
-                    .arg("-i")
-                    .arg(&infile)
+                    .arg(infile)
                     .output()
-                    .expect("failed to run cargo")
+                    .expect("failed to run ssapper-tool")
                     .stdout
                     .as_slice(),
             )
@@ -162,15 +173,44 @@ pub fn test_integration_external() {
         );
 
         assert_eq!(cmd_out1, cmd_out2);
+
+        let time3 = Instant::now();
+
+        let cmd_out2 = error_filter(
+            from_utf8(
+                Command::new("./target/debug/ssapper")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run ssapper-tool")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+        let time4 = Instant::now();
+
+        assert_eq!(cmd_out1, cmd_out2);
+
+        times1 += time2 - time1;
+        times2 += time3 - time2;
+        times3 += time4 - time3;
     }
+
+    println!("z3 total time: {:?}", times1);
+    println!("ssapper-tool total time: {:?}", times2);
+    println!("ssapper-tool again total time: {:?}", times3);
 }
 
 #[test]
 pub fn test_integration_nocache() {
     // two of the longest stainless files, takes around 3 seconds total (when not caching)
+    let time1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), None);
     }
+    let time2 = Instant::now();
+    println!("no caching: {:?}", time2 - time1);
 }
 
 #[test]
@@ -179,9 +219,12 @@ pub fn test_integration_cache_empty() {
 
     let mut conn = open_db(cache_file.path()).expect("couldnt open db");
 
+    let time1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
+    let time2 = Instant::now();
+    println!("cache warmup: {:?}", time2 - time1);
 
     // drop cache_file
 }
@@ -195,10 +238,14 @@ pub fn test_integration_cache_built() {
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
+    let time2 = Instant::now();
 
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
+    let time3 = Instant::now();
+
+    println!("warmed up cache: {:?}", time3 - time2);
 }
 
 // on my machine: took 421 seconds when building cache, 160 seconds when cache already built

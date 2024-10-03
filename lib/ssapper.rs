@@ -183,7 +183,7 @@ pub fn send_sexps_with_cache(
         backlog.push(s);
 
         let mut query_stmt =
-            conn.prepare("SELECT result_value FROM computations WHERE hash = ?1")?;
+            conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
         let cached_result: Option<String> = query_stmt
             .query_row(params![s.hash.to_string()], |row| row.get(0))
             .ok();
@@ -200,13 +200,14 @@ pub fn send_sexps_with_cache(
             backlog.clear();
         };
     }
+
     // we're never going to need to update db while sending sexps, so we can send all of them at
     // once at the end
     if need_to_cache {
         let tx = conn.transaction()?;
         {
             let mut stmt =
-                tx.prepare("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+                tx.prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
             for (s, resp, n) in &responses {
                 if *n {
                     stmt.execute(params![s.hash.to_string(), resp.to_string()])?;
@@ -215,6 +216,7 @@ pub fn send_sexps_with_cache(
         }
         tx.commit()?;
     }
+
     let responses = responses
         .into_iter()
         .map(|(_, r, _)| r)
