@@ -1,3 +1,5 @@
+pub mod ssapper_async;
+
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     io::BufRead,
@@ -13,6 +15,7 @@ use smtlib::{
 };
 
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct HashedSexp {
@@ -32,6 +35,9 @@ pub enum Error {
 
     #[error("Parser error")]
     Parser(#[from] peg::error::ParseError<peg::str::LineCol>),
+
+    #[error("async error")]
+    Join(#[from] JoinError),
 
     #[error("other error")]
     Other(String),
@@ -177,7 +183,27 @@ pub fn send_sexps_with_cache(
         // TODO: since we are always running each statement anyways, caching doesnt actually
         // improve the performance at all yet
 
-        responses.extend(send_sexp_with_cache(s, &mut backlog, proc, conn)?.into_iter());
+        if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
+            break;
+        }
+        backlog.push(s);
+        let mut query_stmt =
+            conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
+        let cached_result: Option<String> = query_stmt
+            .query_row(params![s.hash.to_string()], |row| row.get(0))
+            .ok();
+        if let Some(resp) = cached_result {
+            responses.push((s, resp.to_string(), false));
+        } else {
+            for b in &backlog {
+                proc.send(&b.sexp);
+                let res = proc.get_response(|s| s.to_string())?;
+                responses.push((b, res.to_string(), true));
+            }
+            backlog.clear();
+        };
+
+        // responses.extend(send_sexp_with_cache(s, &mut backlog, proc, conn)?.into_iter());
     }
 
     // we're never going to need to update db while sending sexps, so we can send all of them at
@@ -201,39 +227,4 @@ pub fn send_sexps_with_cache(
         .collect();
 
     Ok(responses)
-}
-
-fn send_sexp_with_cache<'a>(
-    s: &'a HashedSexp,
-    backlog: &mut Vec<&'a HashedSexp>,
-    proc: &mut SmtProc,
-    conn: &mut Connection,
-) -> Result<Vec<(HashedSexp, String, bool)>> {
-    // TODO: since we are always running each statement anyways, caching doesnt actually
-    // improve the performance at all yet
-
-    if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
-        return Err(Error::Other("bla".to_string()));
-    }
-
-    backlog.push(s);
-
-    let mut query_stmt =
-        conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
-    let cached_result: Option<String> = query_stmt
-        .query_row(params![s.hash.to_string()], |row| row.get(0))
-        .ok();
-
-    if let Some(resp) = cached_result {
-        Ok(vec![(s.clone(), resp.to_string(), false)])
-    } else {
-        let mut responses = Vec::new();
-        for b in &mut *backlog {
-            proc.send(&b.sexp);
-            let res = proc.get_response(|s| s.to_string())?;
-            responses.push((b.clone(), res.to_string(), true));
-        }
-        backlog.clear();
-        Ok(responses)
-    }
 }

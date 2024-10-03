@@ -133,6 +133,7 @@ pub fn test_integration_external() {
     let mut times1 = Duration::from_secs(0);
     let mut times2 = Duration::from_secs(0);
     let mut times3 = Duration::from_secs(0);
+    let mut times4 = Duration::from_secs(0);
     let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
     set_var("SSAPPER_CACHE_FILE", tmpdb.path());
 
@@ -161,7 +162,7 @@ pub fn test_integration_external() {
 
         let cmd_out2 = error_filter(
             from_utf8(
-                Command::new("./target/release/ssapper")
+                Command::new("./target/release/ssapper_sync")
                     .arg(infile)
                     .output()
                     .expect("failed to run ssapper")
@@ -178,6 +179,22 @@ pub fn test_integration_external() {
 
         let cmd_out2 = error_filter(
             from_utf8(
+                Command::new("./target/release/ssapper_sync")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run ssapper")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+        assert_eq!(cmd_out1, cmd_out2);
+
+        let time4 = Instant::now();
+
+        let cmd_out2 = error_filter(
+            from_utf8(
                 Command::new("./target/release/ssapper")
                     .arg(infile)
                     .output()
@@ -188,18 +205,20 @@ pub fn test_integration_external() {
             .expect("failed to construct string out of output 2")
             .to_string(),
         );
-        let time4 = Instant::now();
+        let time5 = Instant::now();
 
         assert_eq!(cmd_out1, cmd_out2);
 
         times1 += time2 - time1;
         times2 += time3 - time2;
         times3 += time4 - time3;
+        times4 += time5 - time4;
     }
 
     println!("z3 total time: {:?}", times1);
     println!("ssapper empty cache: {:?}", times2);
     println!("ssapper warm cache: {:?}", times3);
+    println!("ssapper async: {:?}", times4);
 }
 
 #[test]

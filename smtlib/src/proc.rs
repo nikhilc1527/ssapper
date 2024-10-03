@@ -142,6 +142,10 @@ impl SmtPid {
 }
 
 impl SmtProc {
+    pub fn borrow_io(&self) -> (&ChildStdin, &BufReader<ChildStdout>) {
+        (&self.stdin, &self.stdout)
+    }
+
     /// Create a new SMT process by running a solver.
     ///
     /// The optional `tee` argument redirects all SMT output to a file, for
@@ -199,6 +203,12 @@ impl SmtProc {
     }
 
     fn send_raw(&mut self, data: &sexp::Sexp) {
+        writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
+        if let Some(f) = &mut self.tee {
+            f.append(data.clone());
+        }
+    }
+    pub fn send_raw2(&mut self, data: sexp::Sexp) {
         writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
         if let Some(f) = &mut self.tee {
             f.append(data.clone());
