@@ -177,32 +177,7 @@ pub fn send_sexps_with_cache(
         // TODO: since we are always running each statement anyways, caching doesnt actually
         // improve the performance at all yet
 
-        // if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
-        //     break;
-        // }
-
-        // backlog.push(s);
-
-        // let mut query_stmt =
-        //     conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
-        // let cached_result: Option<String> = query_stmt
-        //     .query_row(params![s.hash.to_string()], |row| row.get(0))
-        //     .ok();
-
-        // if let Some(resp) = cached_result {
-        //     responses.push((s, resp.to_string(), false));
-        // } else {
-        //     for b in &backlog {
-        //         proc.send(&b.sexp);
-        //         let res = proc.get_response(|s| s.to_string())?;
-        //         responses.push((b, res.to_string(), true));
-        //         need_to_cache = true;
-        //     }
-        //     backlog.clear();
-        // };
-
-        let mut res = send_sexp_with_cache(s, &mut backlog, proc, conn)?;
-        responses.append(&mut res);
+        responses.extend(send_sexp_with_cache(s, &mut backlog, proc, conn)?.into_iter());
     }
 
     // we're never going to need to update db while sending sexps, so we can send all of them at

@@ -62,7 +62,6 @@ pub fn test_run_solver() {
 
 fn error_filter(s: String) -> String {
     s.lines()
-        // .filter(|s| !s.contains("error"))
         .map(|line| {
             line.split(" ")
                 .map(|word| {
@@ -199,19 +198,16 @@ pub fn test_integration_external() {
     }
 
     println!("z3 total time: {:?}", times1);
-    println!("ssapper-tool total time: {:?}", times2);
-    println!("ssapper-tool again total time: {:?}", times3);
+    println!("ssapper empty cache: {:?}", times2);
+    println!("ssapper warm cache: {:?}", times3);
 }
 
 #[test]
 pub fn test_integration_nocache() {
     // two of the longest stainless files, takes around 3 seconds total (when not caching)
-    let time1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), None);
     }
-    let time2 = Instant::now();
-    println!("no caching: {:?}", time2 - time1);
 }
 
 #[test]
@@ -220,12 +216,9 @@ pub fn test_integration_cache_empty() {
 
     let mut conn = open_db(cache_file.path()).expect("couldnt open db");
 
-    let time1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
-    let time2 = Instant::now();
-    println!("cache warmup: {:?}", time2 - time1);
 
     // drop cache_file
 }
@@ -239,20 +232,14 @@ pub fn test_integration_cache_built() {
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
-    let time2 = Instant::now();
 
     for infile in INFILES {
         test_file(infile.to_string(), Some(&mut conn));
     }
-    let time3 = Instant::now();
-
-    println!("warmed up cache: {:?}", time3 - time2);
 }
 
-// on my machine: took 421 seconds when building cache, 160 seconds when cache already built
-//                     ~300 seconds when not using caching at all
 #[test]
-#[ignore = "takes too long, only run if you have the time"]
+#[ignore = "takes too long"]
 pub fn test_integration_full_stainless() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
@@ -264,10 +251,96 @@ pub fn test_integration_full_stainless() {
         .map(|path| path.unwrap().path().display().to_string())
         .collect();
 
+    let s1 = Instant::now();
     paths_vec.iter().for_each(|infile| {
         test_file(infile.to_string(), Some(&mut conn));
     });
+    let s2 = Instant::now();
     paths_vec.iter().for_each(|infile| {
         test_file(infile.to_string(), Some(&mut conn));
     });
+    let s3 = Instant::now();
+
+    println!("before caching: {:?}", s2 - s1);
+    println!("after  caching: {:?}", s3 - s2);
+}
+
+#[test]
+#[ignore = "takes way too long"]
+pub fn test_integration_external_full() {
+    let mut times1 = Duration::from_secs(0);
+    let mut times2 = Duration::from_secs(0);
+    let mut times3 = Duration::from_secs(0);
+    let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
+    set_var("SSAPPER_CACHE_FILE", tmpdb.path());
+
+    Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .output()
+        .expect("couldnt run cargo build release");
+
+    let paths = read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
+    let paths_vec: Vec<String> = paths
+        .map(|path| path.unwrap().path().display().to_string())
+        .collect();
+
+    for infile in &paths_vec {
+        let time1 = Instant::now();
+        let cmd_out1 = error_filter(
+            from_utf8(
+                Command::new("z3")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run the actual z3")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 1")
+            .to_string(),
+        );
+
+        let time2 = Instant::now();
+
+        let cmd_out2 = error_filter(
+            from_utf8(
+                Command::new("./target/release/ssapper")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run ssapper")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+
+        assert_eq!(cmd_out1, cmd_out2);
+
+        let time3 = Instant::now();
+
+        let cmd_out2 = error_filter(
+            from_utf8(
+                Command::new("./target/release/ssapper")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run ssapper")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+        let time4 = Instant::now();
+
+        assert_eq!(cmd_out1, cmd_out2);
+
+        times1 += time2 - time1;
+        times2 += time3 - time2;
+        times3 += time4 - time3;
+    }
+
+    println!("z3 total time: {:?}", times1);
+    println!("ssapper empty cache: {:?}", times2);
+    println!("ssapper warm cache: {:?}", times3);
 }
