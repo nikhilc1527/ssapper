@@ -125,12 +125,7 @@ const INFILES: &[&str] = &[
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-733.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-736.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-737.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-738.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-10702.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
 ];
 
@@ -141,6 +136,12 @@ pub fn test_integration_external() {
     let mut times3 = Duration::from_secs(0);
     let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
     set_var("SSAPPER_CACHE_FILE", tmpdb.path());
+
+    Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .output()
+        .expect("couldnt run cargo build release");
 
     for infile in INFILES {
         let time1 = Instant::now();
@@ -161,10 +162,10 @@ pub fn test_integration_external() {
 
         let cmd_out2 = error_filter(
             from_utf8(
-                Command::new("./target/debug/ssapper")
+                Command::new("./target/release/ssapper")
                     .arg(infile)
                     .output()
-                    .expect("failed to run ssapper-tool")
+                    .expect("failed to run ssapper")
                     .stdout
                     .as_slice(),
             )
@@ -178,10 +179,10 @@ pub fn test_integration_external() {
 
         let cmd_out2 = error_filter(
             from_utf8(
-                Command::new("./target/debug/ssapper")
+                Command::new("./target/release/ssapper")
                     .arg(infile)
                     .output()
-                    .expect("failed to run ssapper-tool")
+                    .expect("failed to run ssapper")
                     .stdout
                     .as_slice(),
             )

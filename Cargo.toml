@@ -7,6 +7,9 @@ name = "ssapper"
 version.workspace = true
 edition.workspace = true
 
+[profile.test]
+inherits = "release"
+
 [[bin]]
 name = "ssapper"
 path = "src/main.rs"

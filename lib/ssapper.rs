@@ -32,6 +32,9 @@ pub enum Error {
 
     #[error("Parser error")]
     Parser(#[from] peg::error::ParseError<peg::str::LineCol>),
+
+    #[error("other error")]
+    Other(String),
 }
 
 impl PartialEq for Error {
@@ -95,7 +98,6 @@ pub fn parse_file<T: BufRead>(inlines: T) -> Result<Vec<HashedSexp>> {
                 running = running[..ind].to_string();
                 break;
             }
-
             if line_has_stuff && par_balance == 0 {
                 line_has_stuff = false;
                 let cur = &running[..=ind];
@@ -170,52 +172,52 @@ pub fn send_sexps_with_cache(
     let mut responses = Vec::new();
     // let mut total_time_taken = Duration::from_micros(0);
     let mut backlog: Vec<&HashedSexp> = Vec::new();
-    let mut need_to_cache = false;
 
     for s in sexps {
         // TODO: since we are always running each statement anyways, caching doesnt actually
         // improve the performance at all yet
 
-        if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
-            break;
-        }
+        // if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
+        //     break;
+        // }
 
-        backlog.push(s);
+        // backlog.push(s);
 
-        let mut query_stmt =
-            conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
-        let cached_result: Option<String> = query_stmt
-            .query_row(params![s.hash.to_string()], |row| row.get(0))
-            .ok();
+        // let mut query_stmt =
+        //     conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
+        // let cached_result: Option<String> = query_stmt
+        //     .query_row(params![s.hash.to_string()], |row| row.get(0))
+        //     .ok();
 
-        if let Some(resp) = cached_result {
-            responses.push((s, resp.to_string(), false));
-        } else {
-            for b in &backlog {
-                proc.send(&b.sexp);
-                let res = proc.get_response(|s| s.to_string())?;
-                responses.push((b, res.to_string(), true));
-                need_to_cache = true;
-            }
-            backlog.clear();
-        };
+        // if let Some(resp) = cached_result {
+        //     responses.push((s, resp.to_string(), false));
+        // } else {
+        //     for b in &backlog {
+        //         proc.send(&b.sexp);
+        //         let res = proc.get_response(|s| s.to_string())?;
+        //         responses.push((b, res.to_string(), true));
+        //         need_to_cache = true;
+        //     }
+        //     backlog.clear();
+        // };
+
+        let mut res = send_sexp_with_cache(s, &mut backlog, proc, conn)?;
+        responses.append(&mut res);
     }
 
     // we're never going to need to update db while sending sexps, so we can send all of them at
     // once at the end
-    if need_to_cache {
-        let tx = conn.transaction()?;
-        {
-            let mut stmt =
-                tx.prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
-            for (s, resp, n) in &responses {
-                if *n {
-                    stmt.execute(params![s.hash.to_string(), resp.to_string()])?;
-                }
+    let tx = conn.transaction()?;
+    {
+        let mut stmt =
+            tx.prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+        for (s, resp, n) in &responses {
+            if *n {
+                stmt.execute(params![s.hash.to_string(), resp.to_string()])?;
             }
         }
-        tx.commit()?;
     }
+    tx.commit()?;
 
     let responses = responses
         .into_iter()
@@ -224,4 +226,39 @@ pub fn send_sexps_with_cache(
         .collect();
 
     Ok(responses)
+}
+
+fn send_sexp_with_cache<'a>(
+    s: &'a HashedSexp,
+    backlog: &mut Vec<&'a HashedSexp>,
+    proc: &mut SmtProc,
+    conn: &mut Connection,
+) -> Result<Vec<(HashedSexp, String, bool)>> {
+    // TODO: since we are always running each statement anyways, caching doesnt actually
+    // improve the performance at all yet
+
+    if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
+        return Err(Error::Other("bla".to_string()));
+    }
+
+    backlog.push(s);
+
+    let mut query_stmt =
+        conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
+    let cached_result: Option<String> = query_stmt
+        .query_row(params![s.hash.to_string()], |row| row.get(0))
+        .ok();
+
+    if let Some(resp) = cached_result {
+        Ok(vec![(s.clone(), resp.to_string(), false)])
+    } else {
+        let mut responses = Vec::new();
+        for b in &mut *backlog {
+            proc.send(&b.sexp);
+            let res = proc.get_response(|s| s.to_string())?;
+            responses.push((b.clone(), res.to_string(), true));
+        }
+        backlog.clear();
+        Ok(responses)
+    }
 }

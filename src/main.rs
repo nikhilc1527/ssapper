@@ -67,17 +67,36 @@ pub fn main() {
     };
 
     let sexps = parse_file(inlines).expect("failed to parse input");
+
+    // let mut buf = Vec::new();
+    // inlines.read_to_end(&mut buf);
+    // let sexps = parse_many(std::str::from_utf8(&buf).expect("couldnt get str from utf8"))
+    //     .expect("failed to parse input");
+    // let mut conn = env::var("SSAPPER_CACHE_FILE")
+    //     .ok()
+    //     .map(|file| open_db(file).expect("couldnt open db"))
+    //     .expect("no db file");
     let conn = env::var("SSAPPER_CACHE_FILE")
         .ok()
         .map(|file| open_db(file).expect("couldnt open db"));
 
     let mut proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
+    // for s in &sexps {
+    //     let s1 = Instant::now();
+    //     proc.send(s);
+    //     proc.get_response(|s| s.to_string());
+    //     let s2 = Instant::now();
+    //     total_time += s2 - s1;
+    // }
+
     let outputs = match conn {
         Some(mut conn) => send_sexps_with_cache(sexps.as_slice(), &mut proc, &mut conn),
         None => send_sexps(sexps.as_slice(), &mut proc),
     }
     .expect("couldnt send file to z3 instance");
+    // let outputs =
+    //     parse_file_and_send(inlines, &mut proc, &mut conn).expect("couldnt parse and send sexps");
 
     for out in outputs {
         println!("{}", out);

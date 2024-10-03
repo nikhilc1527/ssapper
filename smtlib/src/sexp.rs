@@ -170,8 +170,8 @@ grammar parser() for str {
 
   rule atom() -> Sexp
   = s:(unquoted_atom() /
-       pipe_quoted_atom() /
-       quoted_atom() /
+       // pipe_quoted_atom() /
+       // quoted_atom() /
        int_atom()) { Sexp::Atom(s) }
 
   rule comment() -> Sexp
