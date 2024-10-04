@@ -161,7 +161,7 @@ fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
 fn sender(
     rx: Receiver<Option<SendCommand>>,
     mut childin: &ChildStdin,
-    conn: &mut Connection,
+    conn: &mut Option<Connection>,
 ) -> Vec<(Option<String>, HashedSexp)> {
     let mut cached = Vec::new();
 
@@ -169,24 +169,29 @@ fn sender(
 
     while let Ok(sc1) = rx.recv() {
         if let Some(sc) = sc1 {
-            backlog.push(sc);
-            let sc = backlog.last().unwrap();
-            let s = &sc.sexp;
-            let cached_result = query_db(conn, s);
-            if let Some(resp) = cached_result {
-                cached.push((Some(resp.to_string()), sc.sexp.clone()));
-                // writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+            if let Some(conn) = conn {
+                backlog.push(sc);
+                let sc = backlog.last().unwrap();
+                let s = &sc.sexp;
+                let cached_result = query_db(conn, s);
+                if let Some(resp) = cached_result {
+                    cached.push((Some(resp.to_string()), sc.sexp.clone()));
+                    // writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+                } else {
+                    for b in &backlog {
+                        writeln!(childin, "{}", b.sexp.sexp)
+                            .expect("I/O error: failed to send to solver");
+                        writeln!(childin, r#"(echo "DONE")"#)
+                            .expect("I/O error: failed to send to solver");
+                        cached.push((None, b.sexp.clone()));
+                    }
+                    backlog.clear();
+                };
             } else {
-                for b in &backlog {
-                    writeln!(childin, "{}", b.sexp.sexp)
-                        .expect("I/O error: failed to send to solver");
-                    writeln!(childin, r#"(echo "DONE")"#)
-                        .expect("I/O error: failed to send to solver");
-                    cached.push((None, b.sexp.clone()));
-                }
-                backlog.clear();
-            };
-
+                writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
+                writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+                // cached.push((None, b.sexp.clone()));
+            }
             // println!("writing: {}", sc.sexp);
         } else {
             break;
@@ -236,7 +241,7 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
 pub async fn parse_and_send_async(
     inlines: Box<dyn BufRead>,
     proc: SmtProc,
-    conn: &mut Connection,
+    conn: &mut Option<Connection>,
 ) -> Result<Vec<String>> {
     let mut inlines = inlines;
 
@@ -254,34 +259,41 @@ pub async fn parse_and_send_async(
         (a, b)
     });
     let mut responses = Vec::new();
-    let transaction = conn.transaction()?;
-    {
-        let mut stmt = transaction
-            .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+    if let Some(conn) = conn {
+        let transaction = conn.transaction()?;
+        {
+            let mut stmt = transaction
+                .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
 
-        // assert_eq!(a.len(), b.len());
-        // println!("a: {a:?}");
-        // println!("b: {b:?}");
-        let mut i = 0;
-        while i < a.len() {
-            let (x1, x3) = &a[i];
-            if let Some(cached) = x1 {
-                if !cached.is_empty() {
-                    responses.push(cached.to_string());
-                }
-            } else {
-                let y1 = &b[i];
+            // assert_eq!(a.len(), b.len());
+            // println!("a: {a:?}");
+            // println!("b: {b:?}");
+            let mut i = 0;
+            while i < a.len() {
+                let (x1, x3) = &a[i];
+                if let Some(cached) = x1 {
+                    if !cached.is_empty() {
+                        responses.push(cached.to_string());
+                    }
+                } else {
+                    let y1 = &b[i];
 
-                if !y1.is_empty() {
-                    responses.push(y1.to_string());
+                    if !y1.is_empty() {
+                        responses.push(y1.to_string());
+                    }
+                    stmt.execute(params![x3.hash.to_string(), y1.to_string()])?;
                 }
-                stmt.execute(params![x3.hash.to_string(), y1.to_string()])?;
+                i += 1;
             }
-            i += 1;
         }
+        transaction.commit()?;
+    } else {
+        b.iter().for_each(|x| {
+            if !x.is_empty() {
+                responses.push(x.to_string())
+            }
+        });
     }
-    transaction.commit()?;
-
     Ok(responses)
 }
 

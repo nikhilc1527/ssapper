@@ -34,7 +34,7 @@ fn error_filter(s: String) -> String {
         .collect::<String>()
 }
 
-fn test_file(infile: String, conn: &mut Connection) {
+fn test_file(infile: String, conn: &mut Option<Connection>) {
     let cmd = from_utf8(
         Command::new("z3")
             .arg(&infile)
@@ -152,22 +152,19 @@ pub fn test_integration_external() {
     println!("ssapper warm: {:?}", times3);
 }
 
-// #[test]
-// pub fn test_integration_nocache() {
-//     // two of the longest stainless files, takes around 3 seconds total (when not caching)
-//     let s1 = Instant::now();
-//     for infile in INFILES {
-//         test_file(infile.to_string(), None);
-//     }
-//     let s2 = Instant::now();
-//     println!("ssapper no cache: {:?}", s2 - s1);
-// }
+#[test]
+pub fn test_integration_nocache() {
+    let mut conn = None;
+    for infile in INFILES {
+        test_file(infile.to_string(), &mut conn);
+    }
+}
 
 #[test]
 pub fn test_integration_cache_empty() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
+    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db file"));
 
     for infile in INFILES {
         test_file(infile.to_string(), &mut conn);
@@ -180,7 +177,7 @@ pub fn test_integration_cache_empty() {
 pub fn test_integration_cache_built() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
+    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db"));
 
     for infile in INFILES {
         test_file(infile.to_string(), &mut conn);
@@ -198,7 +195,7 @@ pub fn test_integration_full_stainless() {
 
     let paths = read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
-    let mut conn = open_db(cache_file.path()).expect("couldnt open db");
+    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db"));
 
     let paths_vec: Vec<String> = paths
         .map(|path| path.unwrap().path().display().to_string())

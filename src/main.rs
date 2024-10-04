@@ -73,13 +73,13 @@ pub fn main() {
     // inlines.read_to_end(&mut buf);
     // let sexps = parse_many(std::str::from_utf8(&buf).expect("couldnt get str from utf8"))
     //     .expect("failed to parse input");
+    // let mut conn = env::var("SSAPPER_CACHE_FILE")
+    //     .ok()
+    //     .map(|file| open_db(file).expect("couldnt open db"))
+    //     .expect("no db file");
     let mut conn = env::var("SSAPPER_CACHE_FILE")
         .ok()
-        .map(|file| open_db(file).expect("couldnt open db"))
-        .expect("no db file");
-    // let conn = env::var("SSAPPER_CACHE_FILE")
-    //     .ok()
-    //     .map(|file| open_db(file).expect("couldnt open db"));
+        .map(|file| open_db(file).expect("couldnt open db"));
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
