@@ -1,5 +1,5 @@
-use rusqlite::Connection;
-use smtlib::{proc::SmtProc, sexp::Sexp};
+use rusqlite::{params, Connection};
+use smtlib::proc::SmtProc;
 
 use crate::{Error, HashedSexp, Result};
 
@@ -19,9 +19,9 @@ struct ParserState {
     line_has_stuff: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SendCommand {
-    sexp: Sexp,
+    sexp: HashedSexp,
 }
 
 fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<String, std::io::Error> {
@@ -49,7 +49,7 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
         // Z3 doesn't put quotes and CVC does (quotes do follow SMT-LIB)
-        if last_line == "DONE" || last_line == "\"DONE\"" {
+        if last_line.starts_with("DONE") {
             let response = buf[..last_end].trim_end();
             return Ok(response.to_string());
         }
@@ -60,9 +60,9 @@ fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<String> {
     let mut responses = Vec::new();
 
     while let Ok(r) = get_response(childout) {
-        if r == "EXIT" || r == "\"EXIT\"" {
+        if r == "EXIT" {
             break;
-        } else if !r.is_empty() {
+        } else {
             responses.push(r);
         }
     }
@@ -70,11 +70,44 @@ fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<String> {
     responses
 }
 
-fn sender(rx: Receiver<Option<SendCommand>>, mut childin: &ChildStdin) {
+fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
+    let mut query_stmt = conn
+        .prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
+        .expect("couldnt get response from db");
+    query_stmt
+        .query_row(params![s.hash.to_string()], |row| row.get(0))
+        .ok()
+}
+
+fn sender(
+    rx: Receiver<Option<SendCommand>>,
+    mut childin: &ChildStdin,
+    conn: &mut Connection,
+) -> Vec<(Option<String>, HashedSexp)> {
+    let mut cached = Vec::new();
+
+    let mut backlog = Vec::new();
+
     while let Ok(sc1) = rx.recv() {
         if let Some(sc) = sc1 {
-            writeln!(childin, "{}", sc.sexp).expect("I/O error: failed to send to solver");
-            writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+            backlog.push(sc);
+            let sc = backlog.last().unwrap();
+            let s = &sc.sexp;
+            let cached_result = query_db(conn, s);
+            if let Some(resp) = cached_result {
+                cached.push((Some(resp.to_string()), sc.sexp.clone()));
+                // writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+            } else {
+                for b in &backlog {
+                    writeln!(childin, "{}", b.sexp.sexp)
+                        .expect("I/O error: failed to send to solver");
+                    writeln!(childin, r#"(echo "DONE")"#)
+                        .expect("I/O error: failed to send to solver");
+                    cached.push((None, b.sexp.clone()));
+                }
+                backlog.clear();
+            };
+
             // println!("writing: {}", sc.sexp);
         } else {
             break;
@@ -82,6 +115,8 @@ fn sender(rx: Receiver<Option<SendCommand>>, mut childin: &ChildStdin) {
     }
     writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
     writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+
+    cached
 }
 
 fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Result<()> {
@@ -95,9 +130,7 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
     let mut last_hash = 0;
 
     loop {
-        // println!("waiting for next sexp");
         let next_sexp = next_sexp(inlines, &mut parser, last_hash);
-        // println!("got next sexp: {next_sexp:?}");
 
         let next_sexp: HashedSexp = match next_sexp {
             Ok(n) => n,
@@ -111,12 +144,9 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
             Err(other) => return Err(other),
         };
 
-        tx.send(Some(SendCommand {
-            sexp: next_sexp.sexp,
-        }))
-        .expect("couldnt send");
-
         last_hash = next_sexp.hash;
+        tx.send(Some(SendCommand { sexp: next_sexp }))
+            .expect("couldnt send");
     }
 
     tx.send(None).expect("couldnt send none");
@@ -124,10 +154,10 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
     Ok(())
 }
 
-pub async fn parse_and_send_async<'a>(
+pub async fn parse_and_send_async(
     inlines: Box<dyn BufRead>,
     proc: SmtProc,
-    _conn: &mut Connection,
+    conn: &mut Connection,
 ) -> Result<Vec<String>> {
     let mut inlines = inlines;
 
@@ -135,14 +165,44 @@ pub async fn parse_and_send_async<'a>(
 
     let (childin, mut childout) = proc.take_childs();
 
-    let responses = scope(|s| {
-        let subio_writer = s.spawn(|| sender(rx, &childin));
+    let (a, b) = scope(|s| {
+        let subio_writer = s.spawn(|| sender(rx, &childin, conn));
         let subio_reader = s.spawn(|| reciever(&mut childout));
         parser(&mut inlines, tx).expect("couldnt parse");
 
-        subio_writer.join().expect("couldnt join the writer");
-        subio_reader.join().expect("couldnt join the reader")
+        let a = subio_writer.join().expect("couldnt join the writer");
+        let b = subio_reader.join().expect("couldnt join the reader");
+        (a, b)
     });
+    let mut responses = Vec::new();
+    let transaction = conn.transaction()?;
+    {
+        let mut stmt = transaction
+            .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+
+        // assert_eq!(a.len(), b.len());
+        // println!("a: {a:?}");
+        // println!("b: {b:?}");
+        let mut i = 0;
+        while i < a.len() {
+            let (x1, x3) = &a[i];
+            if let Some(cached) = x1 {
+                if !cached.is_empty() {
+                    responses.push(cached.to_string());
+                }
+            } else {
+                let y1 = &b[i];
+
+                if !y1.is_empty() {
+                    responses.push(y1.to_string());
+                }
+                stmt.execute(params![x3.hash.to_string(), y1.to_string()])?;
+            }
+            i += 1;
+        }
+    }
+    transaction.commit()?;
+
     Ok(responses)
 }
 
@@ -192,15 +252,8 @@ fn next_sexp(
                 };
 
                 let hashed = HashedSexp::new(last_hash, sexp);
-                // let hashed = match res.last() {
-                //     Some(s) => HashedSexp::new(s.hash, sexp),
-                //     None => HashedSexp::new(0, sexp),
-                // };
-                // res.push(hashed.clone());
                 parser.running = parser.running[ind + 1..].to_string();
                 return Ok(hashed);
-
-                // futures.push(send_sexp_with_cache(hashed, &mut backlog, proc, conn));
             }
         }
     }

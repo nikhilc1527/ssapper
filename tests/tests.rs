@@ -130,10 +130,11 @@ const INFILES: &[&str] = &[
 
 #[test]
 pub fn test_integration_external() {
-    let mut times1 = Duration::from_secs(0);
-    let mut times2 = Duration::from_secs(0);
-    let mut times3 = Duration::from_secs(0);
-    let mut times4 = Duration::from_secs(0);
+    let mut times1 = Duration::from_millis(0);
+    let mut times2 = Duration::from_millis(0);
+    let mut times3 = Duration::from_millis(0);
+    let mut times4 = Duration::from_millis(0);
+    let mut times5 = Duration::from_millis(0);
     let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
     set_var("SSAPPER_CACHE_FILE", tmpdb.path());
 
@@ -193,6 +194,8 @@ pub fn test_integration_external() {
 
         let time4 = Instant::now();
 
+        remove_file(tmpdb.path()).expect("couldnt remove db file");
+
         let cmd_out2 = error_filter(
             from_utf8(
                 Command::new("./target/release/ssapper")
@@ -209,16 +212,36 @@ pub fn test_integration_external() {
 
         assert_eq!(cmd_out1, cmd_out2);
 
+        let cmd_out2 = error_filter(
+            from_utf8(
+                Command::new("./target/release/ssapper")
+                    .arg(infile)
+                    .output()
+                    .expect("failed to run ssapper")
+                    .stdout
+                    .as_slice(),
+            )
+            .expect("failed to construct string out of output 2")
+            .to_string(),
+        );
+        let time6 = Instant::now();
+
+        remove_file(tmpdb.path()).expect("couldnt remove db file");
+
+        assert_eq!(cmd_out1, cmd_out2);
+
         times1 += time2 - time1;
         times2 += time3 - time2;
         times3 += time4 - time3;
         times4 += time5 - time4;
+        times5 += time6 - time5;
     }
 
     println!("z3 total time: {:?}", times1);
     println!("ssapper empty cache: {:?}", times2);
     println!("ssapper warm cache: {:?}", times3);
-    println!("ssapper async: {:?}", times4);
+    println!("ssapper async cold: {:?}", times4);
+    println!("ssapper async warm: {:?}", times5);
 }
 
 #[test]
