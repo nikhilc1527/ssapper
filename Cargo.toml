@@ -11,12 +11,8 @@ edition.workspace = true
 inherits = "release"
 
 [[bin]]
-name = "ssapper_sync"
-path = "src/main_sync.rs"
-
-[[bin]]
 name = "ssapper"
-path = "src/main_async.rs"
+path = "src/main.rs"
 test = false
 
 [[bin]]
