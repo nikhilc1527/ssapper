@@ -135,7 +135,11 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
     }
 }
 
-fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<String> {
+type AType = Vec<(Option<String>, HashedSexp)>;
+type BType = Vec<String>;
+
+/// reads responses from solver subprocess
+fn reciever(childout: &mut BufReader<ChildStdout>) -> BType {
     let mut responses = Vec::new();
 
     while let Ok(r) = get_response(childout) {
@@ -149,6 +153,7 @@ fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<String> {
     responses
 }
 
+/// asks the database if the hashed sexp exists in the table
 fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
     let mut query_stmt = conn
         .prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
@@ -158,11 +163,12 @@ fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
         .ok()
 }
 
+/// sends queries to solver subprocess
 fn sender(
     rx: Receiver<Option<SendCommand>>,
     mut childin: &ChildStdin,
     conn: &mut Option<Connection>,
-) -> Vec<(Option<String>, HashedSexp)> {
+) -> AType {
     let mut cached = Vec::new();
 
     let mut backlog = Vec::new();
@@ -176,7 +182,6 @@ fn sender(
                 let cached_result = query_db(conn, s);
                 if let Some(resp) = cached_result {
                     cached.push((Some(resp.to_string()), sc.sexp.clone()));
-                    // writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
                 } else {
                     for b in &backlog {
                         writeln!(childin, "{}", b.sexp.sexp)
@@ -258,7 +263,14 @@ pub async fn parse_and_send_async(
         let b = subio_reader.join().expect("couldnt join the reader");
         (a, b)
     });
-    let mut responses = Vec::new();
+    let responses = process_and_cache(conn, a, b)?;
+
+    Ok(responses)
+}
+
+fn process_and_cache(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<Vec<String>> {
+    let mut res = Vec::new();
+
     if let Some(conn) = conn {
         let transaction = conn.transaction()?;
         {
@@ -273,13 +285,13 @@ pub async fn parse_and_send_async(
                 let (x1, x3) = &a[i];
                 if let Some(cached) = x1 {
                     if !cached.is_empty() {
-                        responses.push(cached.to_string());
+                        res.push(cached.to_string());
                     }
                 } else {
                     let y1 = &b[i];
 
                     if !y1.is_empty() {
-                        responses.push(y1.to_string());
+                        res.push(y1.to_string());
                     }
                     stmt.execute(params![x3.hash.to_string(), y1.to_string()])?;
                 }
@@ -290,11 +302,12 @@ pub async fn parse_and_send_async(
     } else {
         b.iter().for_each(|x| {
             if !x.is_empty() {
-                responses.push(x.to_string())
+                res.push(x.to_string())
             }
         });
     }
-    Ok(responses)
+
+    Ok(res)
 }
 
 fn next_sexp(
