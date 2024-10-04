@@ -15,7 +15,6 @@ use smtlib::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct HashedSexp {
@@ -35,9 +34,6 @@ pub enum Error {
 
     #[error("Parser error")]
     Parser(#[from] peg::error::ParseError<peg::str::LineCol>),
-
-    #[error("async error")]
-    Join(#[from] JoinError),
 
     #[error("other error")]
     Other(String),

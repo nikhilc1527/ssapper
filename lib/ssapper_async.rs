@@ -1,52 +1,16 @@
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use smtlib::{proc::SmtProc, sexp::Sexp};
-use tokio::{
-    spawn,
-    sync::mpsc::{channel, Receiver, Sender},
-};
 
 use crate::{Error, HashedSexp, Result};
 
-use std::io::BufRead;
+use std::{
+    io::{BufRead, BufReader, Write},
+    process::{ChildStdin, ChildStdout},
+    sync::mpsc::{channel, Receiver, Sender},
+    thread::scope,
+};
 
 use smtlib::sexp::parse;
-
-async fn send_sexp_with_cache<'a>(
-    s: HashedSexp,
-    backlog: &mut Vec<HashedSexp>,
-    proc: &mut SmtProc,
-    conn: &mut Connection,
-    results: &mut Vec<(HashedSexp, String, bool)>,
-) -> Result<()> {
-    // TODO: since we are always running each statement anyways, caching doesnt actually
-    // improve the performance at all yet
-
-    if s.sexp == Sexp::List(vec![Sexp::Atom(smtlib::sexp::Atom::S("exit".to_string()))]) {
-        return Err(Error::Other("bla".to_string()));
-    }
-
-    let h = s.hash.to_string();
-    backlog.push(s.clone());
-
-    let mut query_stmt =
-        conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?;
-    let cached_result: Option<String> = query_stmt.query_row(params![h], |row| row.get(0)).ok();
-
-    if let Some(resp) = cached_result {
-        results.push((s, resp.to_string(), false));
-        Ok(())
-    } else {
-        let mut responses = Vec::new();
-        for b in &mut *backlog {
-            proc.send(&b.sexp);
-            let res = proc.get_response(|s| s.to_string())?;
-            responses.push((b.clone(), res.to_string(), true));
-        }
-        backlog.clear();
-        results.extend(responses.into_iter());
-        Ok(())
-    }
-}
 
 struct ParserState {
     linenum: usize,
@@ -60,13 +24,67 @@ struct SendCommand {
     sexp: Sexp,
 }
 
-pub async fn parse_and_send_async(
-    inlines: Box<dyn BufRead>,
-    mut proc: SmtProc,
-    conn: &mut Connection,
-) -> Result<Vec<String>> {
-    let mut inlines = inlines;
+fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<String, std::io::Error> {
+    // buf accumulates the entire response, which is read line-by-line
+    // looking for the DONE marker.
+    let mut buf = String::new();
+    loop {
+        let last_end = buf.len();
+        // n is the number of bytes read (that is, the length of this line
+        // including the newline)
+        let n = child.read_line(&mut buf);
+        let n = match n {
+            Ok(n) => n,
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::BrokenPipe => return Err(err),
+                o => panic!("{o}"),
+            },
+        };
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "couldnt get from child",
+            ));
+        }
+        // last line, without the newline
+        let last_line = buf[last_end..last_end + n].trim_end();
+        // Z3 doesn't put quotes and CVC does (quotes do follow SMT-LIB)
+        if last_line == "DONE" || last_line == "\"DONE\"" {
+            let response = buf[..last_end].trim_end();
+            return Ok(response.to_string());
+        }
+    }
+}
 
+fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<String> {
+    let mut responses = Vec::new();
+
+    while let Ok(r) = get_response(childout) {
+        if r == "EXIT" || r == "\"EXIT\"" {
+            break;
+        } else if !r.is_empty() {
+            responses.push(r);
+        }
+    }
+
+    responses
+}
+
+fn sender(rx: Receiver<Option<SendCommand>>, mut childin: &ChildStdin) {
+    while let Ok(sc1) = rx.recv() {
+        if let Some(sc) = sc1 {
+            writeln!(childin, "{}", sc.sexp).expect("I/O error: failed to send to solver");
+            writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+            // println!("writing: {}", sc.sexp);
+        } else {
+            break;
+        }
+    }
+    writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+}
+
+fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Result<()> {
     let mut parser = ParserState {
         linenum: 0,
         running: "".to_string(),
@@ -76,34 +94,9 @@ pub async fn parse_and_send_async(
 
     let mut last_hash = 0;
 
-    let (tx, mut rx) = channel::<Option<SendCommand>>(64);
-
-    // let (stdin, stdout) = proc.borrow_io();
-
-    let manager = spawn(async move {
-        let mut proc: SmtProc = proc;
-        let mut responses = Vec::new();
-        // Start receiving messages
-        while let Some(sc1) = rx.recv().await {
-            if let Some(sc) = sc1 {
-                proc.send_raw2(sc.sexp);
-                let r = proc
-                    .get_response(|s| s.to_string())
-                    .expect("couldnt get response");
-                if !r.is_empty() {
-                    responses.push(r);
-                }
-            } else {
-                break;
-            }
-        }
-
-        (proc, responses)
-    });
-
     loop {
         // println!("waiting for next sexp");
-        let next_sexp = next_sexp(&mut inlines, &mut parser, last_hash);
+        let next_sexp = next_sexp(inlines, &mut parser, last_hash);
         // println!("got next sexp: {next_sexp:?}");
 
         let next_sexp: HashedSexp = match next_sexp {
@@ -121,21 +114,35 @@ pub async fn parse_and_send_async(
         tx.send(Some(SendCommand {
             sexp: next_sexp.sexp,
         }))
-        .await
         .expect("couldnt send");
 
         last_hash = next_sexp.hash;
     }
 
-    tx.send(None).await.expect("couldnt send none");
+    tx.send(None).expect("couldnt send none");
 
-    let (proc, responses) = manager.await.expect("couldnt wait for receivers");
+    Ok(())
+}
 
-    // let msg = proc
-    //     .get_response(|s| s.to_string())
-    //     .expect("couldnt read from proc");
+pub async fn parse_and_send_async<'a>(
+    inlines: Box<dyn BufRead>,
+    proc: SmtProc,
+    _conn: &mut Connection,
+) -> Result<Vec<String>> {
+    let mut inlines = inlines;
 
-    // Ok(vec![msg])
+    let (tx, rx) = channel::<Option<SendCommand>>();
+
+    let (childin, mut childout) = proc.take_childs();
+
+    let responses = scope(|s| {
+        let subio_writer = s.spawn(|| sender(rx, &childin));
+        let subio_reader = s.spawn(|| reciever(&mut childout));
+        parser(&mut inlines, tx).expect("couldnt parse");
+
+        subio_writer.join().expect("couldnt join the writer");
+        subio_reader.join().expect("couldnt join the reader")
+    });
     Ok(responses)
 }
 

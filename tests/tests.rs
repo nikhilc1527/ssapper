@@ -224,9 +224,12 @@ pub fn test_integration_external() {
 #[test]
 pub fn test_integration_nocache() {
     // two of the longest stainless files, takes around 3 seconds total (when not caching)
+    let s1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), None);
     }
+    let s2 = Instant::now();
+    println!("ssapper no cache: {:?}", s2 - s1);
 }
 
 #[test]

@@ -16,6 +16,7 @@ extern crate thiserror;
 
 use clap::Parser;
 
+use futures::executor::block_on;
 use smtlib::{conf::SolverCmd, proc::SmtProc};
 use ssapper::{open_db, ssapper_async::parse_and_send_async};
 
@@ -30,8 +31,7 @@ struct Cli {
 }
 
 // all options taken from env variables
-#[tokio::main]
-pub async fn main() {
+pub fn main() {
     // setup solvers
     let opts = Cli::parse().opts;
 
@@ -99,9 +99,9 @@ pub async fn main() {
     // let outputs =
     //     parse_file_and_send(inlines, &mut proc, &mut conn).expect("couldnt parse and send sexps");
 
-    let outputs = parse_and_send_async(inlines, proc, &mut conn)
-        .await
-        .expect("couldnt parse and send");
+    let outputs = parse_and_send_async(inlines, proc, &mut conn);
+
+    let outputs = block_on(outputs).expect("couldnt parse and send");
 
     for out in outputs {
         println!("{}", out);

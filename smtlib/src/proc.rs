@@ -105,12 +105,6 @@ type Result<T> = std::result::Result<T, SolverError>;
 // State-machine related code
 // =============================
 
-impl Drop for SmtProc {
-    fn drop(&mut self) {
-        self.kill();
-    }
-}
-
 impl SmtPid {
     /// Kill the SMT process by pid.
     pub fn kill(&self) {
@@ -142,8 +136,9 @@ impl SmtPid {
 }
 
 impl SmtProc {
-    pub fn borrow_io(&self) -> (&ChildStdin, &BufReader<ChildStdout>) {
-        (&self.stdin, &self.stdout)
+    /// takes the stdin and stdout handles from the process
+    pub fn take_childs(self) -> (ChildStdin, BufReader<ChildStdout>) {
+        (self.stdin, self.stdout)
     }
 
     /// Create a new SMT process by running a solver.
@@ -203,12 +198,6 @@ impl SmtProc {
     }
 
     fn send_raw(&mut self, data: &sexp::Sexp) {
-        writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
-        if let Some(f) = &mut self.tee {
-            f.append(data.clone());
-        }
-    }
-    pub fn send_raw2(&mut self, data: sexp::Sexp) {
         writeln!(self.stdin, "{data}").expect("I/O error: failed to send to solver");
         if let Some(f) = &mut self.tee {
             f.append(data.clone());
@@ -370,14 +359,6 @@ impl SmtProc {
                 return Ok(cb(response));
             }
         }
-    }
-
-    fn kill(&mut self) {
-        _ = writeln!(self.stdin, "(exit)");
-        _ = self.stdin.flush();
-        _ = self.child.kill();
-        _ = self.child.wait();
-        *self.terminated.lock().unwrap() = Status::Terminated;
     }
 
     // ========================
