@@ -2,8 +2,8 @@
 Cargo.lock
 /out
 
-testing_inputs/
-!testing_inputs/stainless_benchmarks
-!testing_inputs/small*
+testing_inputs/dafny
+testing_inputs/incremental
+testing_inputs/non-incremental
 
 .*sync*
