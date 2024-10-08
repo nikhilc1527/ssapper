@@ -7,7 +7,7 @@ use std::{
     process::{ChildStdin, ChildStdout},
     sync::mpsc::{channel, Receiver, Sender},
     thread::scope,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use smtlib::sexp::parse;
@@ -215,12 +215,12 @@ pub async fn parse_and_send_async(
         let subio_reader = s.spawn(|| reciever(&mut childout));
         parser(&mut inlines, tx).expect("couldnt parse");
 
-        let a = subio_writer.join().expect("couldnt join the writer");
         let b = subio_reader.join().expect("couldnt join the reader");
+        let a = subio_writer.join().expect("couldnt join the writer");
+
         (a, b)
     });
     let responses = merge_results(conn, a, b)?;
-
     Ok(responses)
 }
 
@@ -354,8 +354,7 @@ fn merge_results(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<Pe
         {
             let mut stmt = transaction
                 .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
-
-            a.into_iter().zip(b.into_iter()).try_for_each(|(q, p)| {
+            for (q, p) in a.into_iter().zip(b.into_iter()) {
                 if let Some(cached) = &q.result {
                     if !cached.is_empty() {
                         res.push(q);
@@ -374,11 +373,10 @@ fn merge_results(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<Pe
                     }
                     stmt.execute(params![
                         q.query.unwrap().hash.to_string(),
-                        p.result.unwrap_or("".to_string()).to_string()
+                        p.result.unwrap_or("".to_string())
                     ])?;
                 }
-                Ok::<(), Error>(())
-            })?;
+            }
         }
         transaction.commit()?;
     } else {

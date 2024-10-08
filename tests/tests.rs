@@ -94,6 +94,7 @@ pub fn test_integration_external() {
     let mut times1 = Duration::from_millis(0);
     let mut times2 = Duration::from_millis(0);
     let mut times3 = Duration::from_millis(0);
+
     let tmp_cache_file = NamedTempFile::new().expect("couldnt make tmp file");
     let tmp_perf_file = NamedTempFile::new().expect("couldnt make tmp file");
 
@@ -104,32 +105,32 @@ pub fn test_integration_external() {
             let mut buf2 = String::new();
             let mut perf_reader = BufReader::new(perf_file);
 
-            perf_reader
+            let l = perf_reader
                 .read_line(&mut buf1)
                 .expect("couldnt read from perf file");
-            buf1 = buf1[12..buf1.len() - 1].to_string();
-            perf_reader
+            buf1 = buf1[12..l - 1].to_string();
+            let l = perf_reader
                 .read_line(&mut buf2)
                 .expect("couldnt read from perf file");
-            buf2 = buf2[14..buf2.len() - 1].to_string();
-            println!("buf1: {buf1}, buf2: {buf2}");
+            buf2 = buf2[14..l - 1].to_string();
             let hits = buf1.parse::<usize>().expect("couldnt read cache hits");
             let misses = buf2.parse::<usize>().expect("couldnt read cache misses");
             tester(hits, misses);
         } else {
-            println!("no perf file found");
+            assert_ne!(0, 0);
         }
     };
 
-    let test = || {
-        Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .output()
-            .expect("couldnt run cargo build release");
+    Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .output()
+        .expect("couldnt run cargo build release");
 
+    let test = || {
         for infile in INFILES {
-            let time1 = Instant::now();
+            let c1_start = Instant::now();
+
             let cmd_out1 = error_filter(
                 from_utf8(
                     Command::new("z3")
@@ -143,7 +144,8 @@ pub fn test_integration_external() {
                 .to_string(),
             );
 
-            let time2 = Instant::now();
+            let c1_end = Instant::now();
+            let c2_start = Instant::now();
 
             let cmd_out2 = error_filter(
                 from_utf8(
@@ -157,12 +159,13 @@ pub fn test_integration_external() {
                 .expect("failed to construct string out of output 2")
                 .to_string(),
             );
+            let c2_end = Instant::now();
 
             assert_eq!(cmd_out1, cmd_out2);
 
             cache_tester(|hits, _| assert_eq!(hits, 0));
 
-            let time3 = Instant::now();
+            let c3_start = Instant::now();
 
             let cmd_out2 = error_filter(
                 from_utf8(
@@ -176,14 +179,15 @@ pub fn test_integration_external() {
                 .expect("failed to construct string out of output 2")
                 .to_string(),
             );
+
+            let c3_end = Instant::now();
             assert_eq!(cmd_out1, cmd_out2);
+
             cache_tester(|_, misses| assert_eq!(misses, 0));
 
-            let time4 = Instant::now();
-
-            times1 += time2 - time1;
-            times2 += time3 - time2;
-            times3 += time4 - time3;
+            times1 += c1_end - c1_start;
+            times2 += c2_end - c2_start;
+            times3 += c3_end - c3_start;
         }
     };
 

@@ -5,6 +5,8 @@ Cargo.lock
 /testing_inputs/QF_NIA
 /testing_inputs/incremental
 /testing_inputs/non-incremental
+/testing_inputs/
+!/testing_inputs/stainless_benchmarks
 /bla
 testing_inputs.tar.gz
 .*sync*
