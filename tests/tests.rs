@@ -1,12 +1,15 @@
 #![cfg(test)]
 
-use env::set_var;
 use futures::executor::block_on;
 use io::BufReader;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 use smtlib::conf::SolverCmd;
 use smtlib::proc::SmtProc;
 use ssapper::*;
 use std::*;
+use sync::Arc;
+use sync::Mutex;
 use temp_env::with_var;
 use temp_env::with_vars;
 use tempfile::NamedTempFile;
@@ -18,6 +21,8 @@ use std::fs::*;
 use std::io::*;
 use std::process::*;
 use std::str::*;
+
+use std::io::Read;
 
 fn error_filter(s: String) -> String {
     s.lines()
@@ -280,11 +285,9 @@ pub fn test_integration_full_stainless() {
 #[test]
 #[ignore = "takes way too long"]
 pub fn test_integration_external_full() {
-    let mut times1 = Duration::from_secs(0);
-    let mut times2 = Duration::from_secs(0);
-    let mut times3 = Duration::from_secs(0);
-    let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
-    set_var("SSAPPER_CACHE_FILE", tmpdb.path());
+    let times1 = Arc::new(Mutex::new(Duration::from_secs(0)));
+    let times2 = Arc::new(Mutex::new(Duration::from_secs(0)));
+    let times3 = Arc::new(Mutex::new(Duration::from_secs(0)));
 
     Command::new("cargo")
         .arg("build")
@@ -297,62 +300,70 @@ pub fn test_integration_external_full() {
         .map(|path| path.unwrap().path().display().to_string())
         .collect();
 
-    for infile in &paths_vec {
-        let time1 = Instant::now();
-        let cmd_out1 = error_filter(
-            from_utf8(
-                Command::new("z3")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run the actual z3")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 1")
-            .to_string(),
-        );
+    paths_vec.into_par_iter().for_each(|infile| {
+        let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
 
-        let time2 = Instant::now();
+        let times1 = Arc::clone(&times1);
+        let times2 = Arc::clone(&times2);
+        let times3 = Arc::clone(&times3);
 
-        let cmd_out2 = error_filter(
-            from_utf8(
-                Command::new("./target/release/ssapper")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run ssapper")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 2")
-            .to_string(),
-        );
+        with_var("SSAPPER_CACHE_FILE", Some(tmpdb.path()), || {
+            let time1 = Instant::now();
+            let cmd_out1 = error_filter(
+                from_utf8(
+                    Command::new("z3")
+                        .arg(&infile)
+                        .output()
+                        .expect("failed to run the actual z3")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 1")
+                .to_string(),
+            );
 
-        assert_eq!(cmd_out1, cmd_out2);
+            let time2 = Instant::now();
 
-        let time3 = Instant::now();
+            let cmd_out2 = error_filter(
+                from_utf8(
+                    Command::new("./target/release/ssapper")
+                        .arg(&infile)
+                        .output()
+                        .expect("failed to run ssapper")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 2")
+                .to_string(),
+            );
 
-        let cmd_out2 = error_filter(
-            from_utf8(
-                Command::new("./target/release/ssapper")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run ssapper")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 2")
-            .to_string(),
-        );
-        let time4 = Instant::now();
+            assert_eq!(cmd_out1, cmd_out2);
 
-        assert_eq!(cmd_out1, cmd_out2);
+            let time3 = Instant::now();
 
-        times1 += time2 - time1;
-        times2 += time3 - time2;
-        times3 += time4 - time3;
-    }
+            let cmd_out2 = error_filter(
+                from_utf8(
+                    Command::new("./target/release/ssapper")
+                        .arg(infile)
+                        .output()
+                        .expect("failed to run ssapper")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 2")
+                .to_string(),
+            );
+            let time4 = Instant::now();
 
-    println!("z3 total time: {:?}", times1);
-    println!("ssapper empty cache: {:?}", times2);
-    println!("ssapper warm cache: {:?}", times3);
+            assert_eq!(cmd_out1, cmd_out2);
+
+            *times1.lock().unwrap() += time2 - time1;
+            *times2.lock().unwrap() += time3 - time2;
+            *times3.lock().unwrap() += time4 - time3;
+        });
+    });
+
+    println!("z3 total time: {:?}", times1.lock());
+    println!("ssapper empty cache: {:?}", times2.lock());
+    println!("ssapper warm cache: {:?}", times3.lock());
 }

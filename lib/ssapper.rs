@@ -1,13 +1,12 @@
 use std::{
-    fmt::Display,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Write},
-    ops::Deref,
     path::Path,
     process::{ChildStdin, ChildStdout},
+    rc::Rc,
     sync::mpsc::{channel, Receiver, Sender},
     thread::scope,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use smtlib::sexp::parse;
@@ -20,7 +19,7 @@ use smtlib::{proc::SmtProc, sexp::Sexp};
 use serde::{Deserialize, Serialize};
 
 /// sexp that depends on the hash of the current sexp as well as of all previous queries
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct HashedSexp {
     hash: u64,
     sexp: Sexp,
@@ -70,7 +69,7 @@ impl PartialEq for Error {
         } else if let Error::Solver(_) = self {
             false
         } else {
-            panic!("unreachable");
+            unreachable!()
         }
     }
 }
@@ -78,7 +77,7 @@ impl PartialEq for Error {
 pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
     let conn = Connection::open(path).expect("couldnt open connection to db");
 
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = OFF")?;
+    conn.execute_batch("PRAGMA journal_mode = WAL")?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS computations (
                  hash TEXT PRIMARY KEY,
@@ -112,34 +111,9 @@ struct ParserState {
     line_has_stuff: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SendCommand {
     sexp: HashedSexp,
-}
-
-#[derive(Debug, PartialEq)]
-enum QueryTerminator {
-    Done,
-    Exit,
-}
-
-impl Deref for QueryTerminator {
-    type Target = str;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            QueryTerminator::Done => "DONE",
-            QueryTerminator::Exit => "EXIT",
-        }
-    }
-}
-
-impl Display for QueryTerminator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            QueryTerminator::Done => write!(f, "DONE"),
-            QueryTerminator::Exit => write!(f, "EXIT"),
-        }
-    }
 }
 
 // get response from child process, reading until the line that says DONE
@@ -168,22 +142,16 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
         // Z3 doesn't put quotes and CVC does (quotes do follow SMT-LIB)
-        if last_line.starts_with(&*QueryTerminator::Done) {
+
+        if last_line.starts_with("DONE") {
             let response = buf[..last_end].trim_end();
             return Ok(response.to_string());
         }
     }
 }
 
-/// type of result from sender (each value is optional cache hit)
-type AType = Vec<Query>;
-// type AType = Vec<(Option<String>, HashedSexp)>;
-/// type of result from receiver, each value is result of query, may be empty
-type BType = Vec<Query>;
-// type BType = Vec<String>;
-
 /// type of single query
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Query {
     pub query: Option<HashedSexp>,
     pub result: Option<String>,
@@ -215,21 +183,21 @@ pub async fn parse_and_send_async(
         let subio_reader = s.spawn(|| reciever(&mut childout));
         parser(&mut inlines, tx).expect("couldnt parse");
 
-        let b = subio_reader.join().expect("couldnt join the reader");
         let a = subio_writer.join().expect("couldnt join the writer");
+        let b = subio_reader.join().expect("couldnt join the reader");
 
         (a, b)
     });
-    let responses = merge_results(conn, a, b)?;
-    Ok(responses)
+
+    merge_results(conn, a, b)
 }
 
 /// reads responses from solver subprocess
-fn reciever(childout: &mut BufReader<ChildStdout>) -> BType {
+fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<Query> {
     let mut responses = Vec::new();
 
     while let Ok(r) = get_response(childout) {
-        if r == *QueryTerminator::Exit {
+        if r == "EXIT" {
             break;
         } else {
             responses.push(Query {
@@ -249,64 +217,57 @@ fn sender(
     rx: Receiver<Option<SendCommand>>,
     mut childin: &ChildStdin,
     conn: &mut Option<Connection>,
-) -> AType {
-    let mut cached = Vec::new();
+) -> Vec<Query> {
+    struct RcQuery(Rc<HashedSexp>, Option<String>, Option<Instant>);
 
-    let mut backlog = Vec::new();
+    let mut cached_rcs = Vec::new();
+
+    let mut backlog: Vec<Rc<HashedSexp>> = Vec::new();
 
     while let Ok(sc1) = rx.recv() {
         if let Some(sc) = sc1 {
             if let Some(conn) = conn {
-                backlog.push(sc);
-                let sc = backlog.last().unwrap();
                 let cached_result = query_db(conn, &sc.sexp);
+                let query_rc = Rc::new(sc.sexp);
+                backlog.push(Rc::clone(&query_rc));
                 if let Some(resp) = cached_result {
-                    cached.push(Query {
-                        query: Some(sc.sexp.clone()),
-                        result: Some(resp.to_string()),
-                        start_time: None,
-                        end_time: None,
-                    });
-                    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
+                    cached_rcs.push(RcQuery(Rc::clone(&query_rc), Some(resp.to_string()), None));
+                    writeln!(childin, r#"(echo "DONE")"#)
                         .expect("I/O error: failed to send to solver");
                 } else {
-                    for b in &backlog {
-                        writeln!(childin, "{}", b.sexp.sexp)
+                    for b in backlog.into_iter() {
+                        writeln!(childin, "{}", b.sexp)
                             .expect("I/O error: failed to send to solver");
-                        writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
+                        writeln!(childin, r#"(echo "DONE")"#)
                             .expect("I/O error: failed to send to solver");
-                        cached.push(Query {
-                            query: Some(b.sexp.clone()),
-                            result: None,
-                            start_time: Some(Instant::now()),
-                            end_time: None,
-                        });
                     }
-                    backlog.clear();
+                    cached_rcs.push(RcQuery(Rc::clone(&query_rc), None, Some(Instant::now())));
+                    backlog = Vec::new();
                 };
             } else {
                 writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
-                writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
-                    .expect("I/O error: failed to send to solver");
-                // cached.push((None, b.sexp.clone()));
-                cached.push(Query {
-                    query: Some(sc.sexp.clone()),
-                    result: None,
-                    start_time: Some(Instant::now()),
-                    end_time: None,
-                });
+                writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+                cached_rcs.push(RcQuery(Rc::new(sc.sexp), None, Some(Instant::now())));
             }
-            // println!("writing: {}", sc.sexp);
         } else {
             break;
         }
     }
-    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Exit)
-        .expect("I/O error: failed to send to solver");
-    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
-        .expect("I/O error: failed to send to solver");
 
-    cached
+    writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+
+    backlog.clear();
+
+    cached_rcs
+        .into_iter()
+        .map(|RcQuery(a, b, c)| Query {
+            query: Some(Rc::try_unwrap(a).expect("couldnt take")),
+            result: b,
+            start_time: c,
+            end_time: None,
+        })
+        .collect()
 }
 
 fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Result<()> {
@@ -344,7 +305,7 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
     Ok(())
 }
 
-fn merge_results(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<PerfLog> {
+fn merge_results(conn: &mut Option<Connection>, a: Vec<Query>, b: Vec<Query>) -> Result<PerfLog> {
     let mut res: Vec<Query> = Vec::new();
     let mut cache_hits = 0;
     let mut cache_misses = 0;
@@ -361,20 +322,20 @@ fn merge_results(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<Pe
                         cache_hits += 1;
                     }
                 } else {
+                    stmt.execute(params![
+                        q.query.as_ref().unwrap().hash.to_string(),
+                        p.result.as_ref().unwrap_or(&"".to_string())
+                    ])?;
                     if p.result.is_some() {
                         let s = Query {
-                            query: q.query.clone(),
-                            result: p.result.clone(),
+                            query: q.query,
+                            result: p.result,
                             start_time: q.start_time,
                             end_time: p.end_time,
                         };
                         res.push(s);
                         cache_misses += 1;
                     }
-                    stmt.execute(params![
-                        q.query.unwrap().hash.to_string(),
-                        p.result.unwrap_or("".to_string())
-                    ])?;
                 }
             }
         }
