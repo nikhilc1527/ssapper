@@ -78,10 +78,7 @@ fn main() {
     let outputs = parse_and_send_async(inlines, proc, &mut conn);
 
     let outputs = block_on(outputs).expect("couldnt parse and send");
-    // println!(
-    //     "hits: {}, misses: {}",
-    //     outputs.cache_hits, outputs.cache_misses
-    // );
+
     if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
         let f = File::create(perf_file).expect("failed to open perf file");
         let mut w = BufWriter::new(f);

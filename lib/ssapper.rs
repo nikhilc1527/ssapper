@@ -232,8 +232,6 @@ fn sender(
                 backlog.push(Rc::clone(&query_rc));
                 if let Some(resp) = cached_result {
                     cached_rcs.push(RcQuery(Rc::clone(&query_rc), Some(resp.to_string()), None));
-                    writeln!(childin, r#"(echo "DONE")"#)
-                        .expect("I/O error: failed to send to solver");
                 } else {
                     for b in backlog.into_iter() {
                         writeln!(childin, "{}", b.sexp)
@@ -254,15 +252,18 @@ fn sender(
         }
     }
 
+    for _ in 0..backlog.len() {
+        writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+    }
+    backlog.clear();
+
     writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
     writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
-
-    backlog.clear();
 
     cached_rcs
         .into_iter()
         .map(|RcQuery(a, b, c)| Query {
-            query: Some(Rc::try_unwrap(a).expect("couldnt take")),
+            query: Some(Rc::try_unwrap(a).expect("couldnt take query rc")),
             result: b,
             start_time: c,
             end_time: None,

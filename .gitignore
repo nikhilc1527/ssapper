@@ -1,12 +1,9 @@
 /target
 Cargo.lock
 /out
-/testing_inputs/dafny
-/testing_inputs/QF_NIA
-/testing_inputs/incremental
-/testing_inputs/non-incremental
+
 /testing_inputs/
 !/testing_inputs/stainless_benchmarks
-/bla
-testing_inputs.tar.gz
+!/testing_inputs/small.smt2
+
 .*sync*

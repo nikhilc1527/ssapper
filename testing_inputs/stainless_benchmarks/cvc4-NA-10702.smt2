@@ -67279,6 +67279,7 @@
 (assert (not b_next!38889))
 
 (check-sat)
+(check-sat)
 
 (pop 1)
 
