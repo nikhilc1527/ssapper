@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 
-cargo build || exit $?
+export SSAPPER_CACHE_FILE=/tmp/bla
+
+cargo build --release || exit $?
 rm out/*
 
 # ./target/debug/ssapper -s z3\ -in -- -i ./testing_inputs/handmade/in1 -o out/out1

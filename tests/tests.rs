@@ -7,12 +7,15 @@ use smtlib::conf::SolverCmd;
 use smtlib::proc::SmtProc;
 use ssapper::*;
 use std::*;
+use temp_env::with_var;
+use temp_env::with_vars;
 use tempfile::NamedTempFile;
 use time::Duration;
 use time::Instant;
 
 use rusqlite::Connection;
 use std::fs::*;
+use std::io::*;
 use std::process::*;
 use std::str::*;
 
@@ -34,7 +37,7 @@ fn error_filter(s: String) -> String {
         .collect::<String>()
 }
 
-fn test_file(infile: String, conn: &mut Option<Connection>) {
+fn test_file(infile: String, conn: &mut Option<Connection>, cache_tester: fn(usize, usize) -> ()) {
     let cmd = from_utf8(
         Command::new("z3")
             .arg(&infile)
@@ -59,7 +62,15 @@ fn test_file(infile: String, conn: &mut Option<Connection>) {
     .expect("couldnt start smt proc");
     let resp = block_on(parse_and_send_async(Box::new(reader), proc, conn)).expect("couldnt run");
 
-    let resp_str = resp.join("\n") + "\n";
+    cache_tester(resp.cache_hits, resp.cache_misses);
+
+    let resp_str = resp
+        .queries
+        .iter()
+        .map(|x| x.result.clone().unwrap())
+        .collect::<Vec<String>>()
+        .join("\n")
+        + "\n";
 
     let cmd = error_filter(cmd);
     let resp_str = error_filter(resp_str);
@@ -83,69 +94,106 @@ pub fn test_integration_external() {
     let mut times1 = Duration::from_millis(0);
     let mut times2 = Duration::from_millis(0);
     let mut times3 = Duration::from_millis(0);
-    let tmpdb = NamedTempFile::new().expect("couldnt make tmp file");
-    set_var("SSAPPER_CACHE_FILE", tmpdb.path());
+    let tmp_cache_file = NamedTempFile::new().expect("couldnt make tmp file");
+    let tmp_perf_file = NamedTempFile::new().expect("couldnt make tmp file");
 
-    Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .output()
-        .expect("couldnt run cargo build release");
+    let cache_tester = |tester: fn(usize, usize) -> ()| {
+        if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
+            let perf_file = File::open(perf_file).expect("couldnt open perf file");
+            let mut buf1 = String::new();
+            let mut buf2 = String::new();
+            let mut perf_reader = BufReader::new(perf_file);
 
-    for infile in INFILES {
-        let time1 = Instant::now();
-        let cmd_out1 = error_filter(
-            from_utf8(
-                Command::new("z3")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run the actual z3")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 1")
-            .to_string(),
-        );
+            perf_reader
+                .read_line(&mut buf1)
+                .expect("couldnt read from perf file");
+            buf1 = buf1[12..buf1.len() - 1].to_string();
+            perf_reader
+                .read_line(&mut buf2)
+                .expect("couldnt read from perf file");
+            buf2 = buf2[14..buf2.len() - 1].to_string();
+            println!("buf1: {buf1}, buf2: {buf2}");
+            let hits = buf1.parse::<usize>().expect("couldnt read cache hits");
+            let misses = buf2.parse::<usize>().expect("couldnt read cache misses");
+            tester(hits, misses);
+        } else {
+            println!("no perf file found");
+        }
+    };
 
-        let time2 = Instant::now();
+    let test = || {
+        Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .output()
+            .expect("couldnt run cargo build release");
 
-        let cmd_out2 = error_filter(
-            from_utf8(
-                Command::new("./target/release/ssapper")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run ssapper")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 2")
-            .to_string(),
-        );
+        for infile in INFILES {
+            let time1 = Instant::now();
+            let cmd_out1 = error_filter(
+                from_utf8(
+                    Command::new("z3")
+                        .arg(infile)
+                        .output()
+                        .expect("failed to run the actual z3")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 1")
+                .to_string(),
+            );
 
-        assert_eq!(cmd_out1, cmd_out2);
+            let time2 = Instant::now();
 
-        let time3 = Instant::now();
+            let cmd_out2 = error_filter(
+                from_utf8(
+                    Command::new("./target/release/ssapper")
+                        .arg(infile)
+                        .output()
+                        .expect("failed to run ssapper")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 2")
+                .to_string(),
+            );
 
-        let cmd_out2 = error_filter(
-            from_utf8(
-                Command::new("./target/release/ssapper")
-                    .arg(infile)
-                    .output()
-                    .expect("failed to run ssapper")
-                    .stdout
-                    .as_slice(),
-            )
-            .expect("failed to construct string out of output 2")
-            .to_string(),
-        );
-        assert_eq!(cmd_out1, cmd_out2);
+            assert_eq!(cmd_out1, cmd_out2);
 
-        let time4 = Instant::now();
+            cache_tester(|hits, _| assert_eq!(hits, 0));
 
-        times1 += time2 - time1;
-        times2 += time3 - time2;
-        times3 += time4 - time3;
-    }
+            let time3 = Instant::now();
+
+            let cmd_out2 = error_filter(
+                from_utf8(
+                    Command::new("./target/release/ssapper")
+                        .arg(infile)
+                        .output()
+                        .expect("failed to run ssapper")
+                        .stdout
+                        .as_slice(),
+                )
+                .expect("failed to construct string out of output 2")
+                .to_string(),
+            );
+            assert_eq!(cmd_out1, cmd_out2);
+            cache_tester(|_, misses| assert_eq!(misses, 0));
+
+            let time4 = Instant::now();
+
+            times1 += time2 - time1;
+            times2 += time3 - time2;
+            times3 += time4 - time3;
+        }
+    };
+
+    with_vars(
+        vec![
+            ("SSAPPER_PERF_FILE", Some(tmp_perf_file.path())),
+            ("SSAPPER_CACHE_FILE", Some(tmp_cache_file.path())),
+        ],
+        test,
+    );
 
     println!("z3 total time: {:?}", times1);
     println!("ssapper cold: {:?}", times2);
@@ -156,7 +204,7 @@ pub fn test_integration_external() {
 pub fn test_integration_nocache() {
     let mut conn = None;
     for infile in INFILES {
-        test_file(infile.to_string(), &mut conn);
+        test_file(infile.to_string(), &mut conn, |_, _| {});
     }
 }
 
@@ -167,7 +215,7 @@ pub fn test_integration_cache_empty() {
     let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db file"));
 
     for infile in INFILES {
-        test_file(infile.to_string(), &mut conn);
+        test_file(infile.to_string(), &mut conn, |_, _| {});
     }
 
     // drop cache_file
@@ -179,13 +227,23 @@ pub fn test_integration_cache_built() {
 
     let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db"));
 
-    for infile in INFILES {
-        test_file(infile.to_string(), &mut conn);
-    }
+    let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
 
-    for infile in INFILES {
-        test_file(infile.to_string(), &mut conn);
-    }
+    with_var("SSAPPER_PERF_FILE", Some(tmpf.path()), || {
+        for infile in INFILES {
+            test_file(infile.to_string(), &mut conn, |hits, misses| {
+                assert_eq!(hits, 0);
+                assert!(misses > 0);
+            });
+        }
+
+        for infile in INFILES {
+            test_file(infile.to_string(), &mut conn, |hits, misses| {
+                assert_eq!(misses, 0);
+                assert!(hits > 0); // need to put in logic to figure out exactly how much this number should be eventually
+            });
+        }
+    });
 }
 
 #[test]
@@ -203,11 +261,11 @@ pub fn test_integration_full_stainless() {
 
     let s1 = Instant::now();
     paths_vec.iter().for_each(|infile| {
-        test_file(infile.to_string(), &mut conn);
+        test_file(infile.to_string(), &mut conn, |_, _| {});
     });
     let s2 = Instant::now();
     paths_vec.iter().for_each(|infile| {
-        test_file(infile.to_string(), &mut conn);
+        test_file(infile.to_string(), &mut conn, |_, _| {});
     });
     let s3 = Instant::now();
 

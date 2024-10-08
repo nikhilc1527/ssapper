@@ -1,10 +1,13 @@
 use std::{
+    fmt::Display,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Write},
+    ops::Deref,
     path::Path,
     process::{ChildStdin, ChildStdout},
     sync::mpsc::{channel, Receiver, Sender},
     thread::scope,
+    time::Instant,
 };
 
 use smtlib::sexp::parse;
@@ -16,10 +19,21 @@ use smtlib::{proc::SmtProc, sexp::Sexp};
 
 use serde::{Deserialize, Serialize};
 
+/// sexp that depends on the hash of the current sexp as well as of all previous queries
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct HashedSexp {
     hash: u64,
     sexp: Sexp,
+}
+
+impl HashedSexp {
+    fn new(prev_hash: u64, sexp: Sexp) -> Self {
+        let mut hasher = DefaultHasher::new();
+        prev_hash.hash(&mut hasher);
+        sexp.hash(&mut hasher);
+        let hash = hasher.finish();
+        Self { hash, sexp }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -61,16 +75,6 @@ impl PartialEq for Error {
     }
 }
 
-impl HashedSexp {
-    fn new(prev_hash: u64, sexp: Sexp) -> Self {
-        let mut hasher = DefaultHasher::new();
-        prev_hash.hash(&mut hasher);
-        sexp.hash(&mut hasher);
-        let hash = hasher.finish();
-        Self { hash, sexp }
-    }
-}
-
 pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
     let conn = Connection::open(path).expect("couldnt open connection to db");
 
@@ -91,6 +95,16 @@ pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
     Ok(conn)
 }
 
+/// asks the database if the hashed sexp exists in the table
+fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
+    let mut query_stmt = conn
+        .prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
+        .expect("couldnt get response from db");
+    query_stmt
+        .query_row(params![s.hash.to_string()], |row| row.get(0))
+        .ok()
+}
+
 struct ParserState {
     linenum: usize,
     running: String,
@@ -103,6 +117,32 @@ struct SendCommand {
     sexp: HashedSexp,
 }
 
+#[derive(Debug, PartialEq)]
+enum QueryTerminator {
+    Done,
+    Exit,
+}
+
+impl Deref for QueryTerminator {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            QueryTerminator::Done => "DONE",
+            QueryTerminator::Exit => "EXIT",
+        }
+    }
+}
+
+impl Display for QueryTerminator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryTerminator::Done => write!(f, "DONE"),
+            QueryTerminator::Exit => write!(f, "EXIT"),
+        }
+    }
+}
+
+// get response from child process, reading until the line that says DONE
 fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<String, std::io::Error> {
     // buf accumulates the entire response, which is read line-by-line
     // looking for the DONE marker.
@@ -128,39 +168,80 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
         // Z3 doesn't put quotes and CVC does (quotes do follow SMT-LIB)
-        if last_line.starts_with("DONE") {
+        if last_line.starts_with(&*QueryTerminator::Done) {
             let response = buf[..last_end].trim_end();
             return Ok(response.to_string());
         }
     }
 }
 
-type AType = Vec<(Option<String>, HashedSexp)>;
-type BType = Vec<String>;
+/// type of result from sender (each value is optional cache hit)
+type AType = Vec<Query>;
+// type AType = Vec<(Option<String>, HashedSexp)>;
+/// type of result from receiver, each value is result of query, may be empty
+type BType = Vec<Query>;
+// type BType = Vec<String>;
+
+/// type of single query
+#[derive(Debug, Clone)]
+pub struct Query {
+    pub query: Option<HashedSexp>,
+    pub result: Option<String>,
+    pub start_time: Option<Instant>,
+    pub end_time: Option<Instant>,
+}
+
+/// structure holding everything that we want to be keeping track of in terms of performance
+pub struct PerfLog {
+    pub cache_misses: usize,
+    pub cache_hits: usize,
+    pub queries: Vec<Query>,
+}
+
+/// given input stream, a process, and a possible connection to a database, run the process and return the output of the process while caching the results in the database
+pub async fn parse_and_send_async(
+    inlines: Box<dyn BufRead>,
+    proc: SmtProc,
+    conn: &mut Option<Connection>,
+) -> Result<PerfLog> {
+    let mut inlines = inlines;
+
+    let (tx, rx) = channel();
+
+    let (childin, mut childout) = proc.take_childs();
+
+    let (a, b) = scope(|s| {
+        let subio_writer = s.spawn(|| sender(rx, &childin, conn));
+        let subio_reader = s.spawn(|| reciever(&mut childout));
+        parser(&mut inlines, tx).expect("couldnt parse");
+
+        let a = subio_writer.join().expect("couldnt join the writer");
+        let b = subio_reader.join().expect("couldnt join the reader");
+        (a, b)
+    });
+    let responses = merge_results(conn, a, b)?;
+
+    Ok(responses)
+}
 
 /// reads responses from solver subprocess
 fn reciever(childout: &mut BufReader<ChildStdout>) -> BType {
     let mut responses = Vec::new();
 
     while let Ok(r) = get_response(childout) {
-        if r == "EXIT" {
+        if r == *QueryTerminator::Exit {
             break;
         } else {
-            responses.push(r);
+            responses.push(Query {
+                query: None,
+                result: if r.is_empty() { None } else { Some(r) },
+                start_time: None,
+                end_time: Some(Instant::now()),
+            });
         }
     }
 
     responses
-}
-
-/// asks the database if the hashed sexp exists in the table
-fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
-    let mut query_stmt = conn
-        .prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
-        .expect("couldnt get response from db");
-    query_stmt
-        .query_row(params![s.hash.to_string()], |row| row.get(0))
-        .ok()
 }
 
 /// sends queries to solver subprocess
@@ -178,32 +259,52 @@ fn sender(
             if let Some(conn) = conn {
                 backlog.push(sc);
                 let sc = backlog.last().unwrap();
-                let s = &sc.sexp;
-                let cached_result = query_db(conn, s);
+                let cached_result = query_db(conn, &sc.sexp);
                 if let Some(resp) = cached_result {
-                    cached.push((Some(resp.to_string()), sc.sexp.clone()));
+                    cached.push(Query {
+                        query: Some(sc.sexp.clone()),
+                        result: Some(resp.to_string()),
+                        start_time: None,
+                        end_time: None,
+                    });
+                    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
+                        .expect("I/O error: failed to send to solver");
                 } else {
                     for b in &backlog {
                         writeln!(childin, "{}", b.sexp.sexp)
                             .expect("I/O error: failed to send to solver");
-                        writeln!(childin, r#"(echo "DONE")"#)
+                        writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
                             .expect("I/O error: failed to send to solver");
-                        cached.push((None, b.sexp.clone()));
+                        cached.push(Query {
+                            query: Some(b.sexp.clone()),
+                            result: None,
+                            start_time: Some(Instant::now()),
+                            end_time: None,
+                        });
                     }
                     backlog.clear();
                 };
             } else {
                 writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
-                writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+                writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
+                    .expect("I/O error: failed to send to solver");
                 // cached.push((None, b.sexp.clone()));
+                cached.push(Query {
+                    query: Some(sc.sexp.clone()),
+                    result: None,
+                    start_time: Some(Instant::now()),
+                    end_time: None,
+                });
             }
             // println!("writing: {}", sc.sexp);
         } else {
             break;
         }
     }
-    writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
-    writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Exit)
+        .expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "{}")"#, QueryTerminator::Done)
+        .expect("I/O error: failed to send to solver");
 
     cached
 }
@@ -243,33 +344,10 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
     Ok(())
 }
 
-pub async fn parse_and_send_async(
-    inlines: Box<dyn BufRead>,
-    proc: SmtProc,
-    conn: &mut Option<Connection>,
-) -> Result<Vec<String>> {
-    let mut inlines = inlines;
-
-    let (tx, rx) = channel::<Option<SendCommand>>();
-
-    let (childin, mut childout) = proc.take_childs();
-
-    let (a, b) = scope(|s| {
-        let subio_writer = s.spawn(|| sender(rx, &childin, conn));
-        let subio_reader = s.spawn(|| reciever(&mut childout));
-        parser(&mut inlines, tx).expect("couldnt parse");
-
-        let a = subio_writer.join().expect("couldnt join the writer");
-        let b = subio_reader.join().expect("couldnt join the reader");
-        (a, b)
-    });
-    let responses = process_and_cache(conn, a, b)?;
-
-    Ok(responses)
-}
-
-fn process_and_cache(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<Vec<String>> {
-    let mut res = Vec::new();
+fn merge_results(conn: &mut Option<Connection>, a: AType, b: BType) -> Result<PerfLog> {
+    let mut res: Vec<Query> = Vec::new();
+    let mut cache_hits = 0;
+    let mut cache_misses = 0;
 
     if let Some(conn) = conn {
         let transaction = conn.transaction()?;
@@ -277,37 +355,52 @@ fn process_and_cache(conn: &mut Option<Connection>, a: AType, b: BType) -> Resul
             let mut stmt = transaction
                 .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
 
-            // assert_eq!(a.len(), b.len());
-            // println!("a: {a:?}");
-            // println!("b: {b:?}");
-            let mut i = 0;
-            while i < a.len() {
-                let (x1, x3) = &a[i];
-                if let Some(cached) = x1 {
+            a.into_iter().zip(b.into_iter()).try_for_each(|(q, p)| {
+                if let Some(cached) = &q.result {
                     if !cached.is_empty() {
-                        res.push(cached.to_string());
+                        res.push(q);
+                        cache_hits += 1;
                     }
                 } else {
-                    let y1 = &b[i];
-
-                    if !y1.is_empty() {
-                        res.push(y1.to_string());
+                    if p.result.is_some() {
+                        let s = Query {
+                            query: q.query.clone(),
+                            result: p.result.clone(),
+                            start_time: q.start_time,
+                            end_time: p.end_time,
+                        };
+                        res.push(s);
+                        cache_misses += 1;
                     }
-                    stmt.execute(params![x3.hash.to_string(), y1.to_string()])?;
+                    stmt.execute(params![
+                        q.query.unwrap().hash.to_string(),
+                        p.result.unwrap_or("".to_string()).to_string()
+                    ])?;
                 }
-                i += 1;
-            }
+                Ok::<(), Error>(())
+            })?;
         }
         transaction.commit()?;
     } else {
-        b.iter().for_each(|x| {
-            if !x.is_empty() {
-                res.push(x.to_string())
+        a.into_iter().zip(b).for_each(|(x, y)| {
+            let q = Query {
+                query: x.query,
+                result: y.result,
+                start_time: x.start_time,
+                end_time: y.end_time,
+            };
+            if q.result.is_some() {
+                res.push(q);
+                cache_misses += 1;
             }
         });
     }
 
-    Ok(res)
+    Ok(PerfLog {
+        queries: res,
+        cache_hits,
+        cache_misses,
+    })
 }
 
 fn next_sexp(

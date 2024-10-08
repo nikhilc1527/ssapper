@@ -4,7 +4,7 @@
 use std::{
     env,
     fs::File,
-    io::{stdin, BufRead, BufReader},
+    io::{stdin, BufRead, BufReader, BufWriter, Write},
 };
 
 extern crate clap;
@@ -30,8 +30,10 @@ struct Cli {
     opts: Vec<String>,
 }
 
-// all options taken from env variables
-pub fn main() {
+/// all options taken from env variables
+/// OPTIONS:
+/// SSAPPER_CACHE_FILE: path to file where queries cache should be stored
+fn main() {
     // setup solvers
     let opts = Cli::parse().opts;
 
@@ -67,43 +69,29 @@ pub fn main() {
         }
     };
 
-    // let sexps = parse_file(inlines).expect("failed to parse input");
-
-    // let mut buf = Vec::new();
-    // inlines.read_to_end(&mut buf);
-    // let sexps = parse_many(std::str::from_utf8(&buf).expect("couldnt get str from utf8"))
-    //     .expect("failed to parse input");
-    // let mut conn = env::var("SSAPPER_CACHE_FILE")
-    //     .ok()
-    //     .map(|file| open_db(file).expect("couldnt open db"))
-    //     .expect("no db file");
     let mut conn = env::var("SSAPPER_CACHE_FILE")
         .ok()
         .map(|file| open_db(file).expect("couldnt open db"));
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
-    // for s in &sexps {
-    //     let s1 = Instant::now();
-    //     proc.send(s);
-    //     proc.get_response(|s| s.to_string());
-    //     let s2 = Instant::now();
-    //     total_time += s2 - s1;
-    // }
-
-    // let outputs = match conn {
-    //     Some(mut conn) => send_sexps_with_cache(sexps.as_slice(), &mut proc, &mut conn),
-    //     None => send_sexps(sexps.as_slice(), &mut proc),
-    // }
-    // .expect("couldnt send file to z3 instance");
-    // let outputs =
-    //     parse_file_and_send(inlines, &mut proc, &mut conn).expect("couldnt parse and send sexps");
-
     let outputs = parse_and_send_async(inlines, proc, &mut conn);
 
     let outputs = block_on(outputs).expect("couldnt parse and send");
+    // println!(
+    //     "hits: {}, misses: {}",
+    //     outputs.cache_hits, outputs.cache_misses
+    // );
+    if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
+        let f = File::create(perf_file).expect("failed to open perf file");
+        let mut w = BufWriter::new(f);
+        writeln!(w, "cache hits: {}", outputs.cache_hits).expect("failed to write to perf file");
+        writeln!(w, "cache misses: {}", outputs.cache_misses)
+            .expect("failed to write to perf file");
+    }
+    let outputs = outputs.queries;
 
     for out in outputs {
-        println!("{}", out);
+        println!("{}", out.result.unwrap());
     }
 }
