@@ -1,14 +1,19 @@
 use std::{
+    fs::read,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{ChildStdin, ChildStdout},
     rc::Rc,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        OnceLock,
+    },
     thread::scope,
     time::Instant,
 };
 
+use sha256::digest;
 use smtlib::sexp::parse;
 
 use rusqlite::{params, Connection, Error as RusqliteError};
@@ -17,6 +22,7 @@ use thiserror::Error;
 use smtlib::{proc::SmtProc, sexp::Sexp};
 
 use serde::{Deserialize, Serialize};
+use which::which;
 
 /// sexp that depends on the hash of the current sexp as well as of all previous queries
 #[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
@@ -25,11 +31,22 @@ pub struct HashedSexp {
     sexp: Sexp,
 }
 
+static Z3_CHECKSUM: OnceLock<String> = OnceLock::new();
+
 impl HashedSexp {
     fn new(prev_hash: u64, sexp: Sexp) -> Self {
+        let checksum = Z3_CHECKSUM.get_or_init(|| match which("z3") {
+            Ok(path) => {
+                let bytes = read(path).expect("couldnt read bytes of z3 binary");
+                digest(bytes)
+            }
+            Err(e) => panic!("could not find z3 binary: {}", e),
+        });
+
         let mut hasher = DefaultHasher::new();
         prev_hash.hash(&mut hasher);
         sexp.hash(&mut hasher);
+        checksum.hash(&mut hasher);
         let hash = hasher.finish();
         Self { hash, sexp }
     }
