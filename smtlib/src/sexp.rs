@@ -22,7 +22,7 @@ impl Atom {
     /// Return the string value of self, if it is a string.
     pub fn s(&self) -> Option<&str> {
         if let Self::S(s) = self {
-            Some(&s)
+            Some(s)
         } else {
             None
         }

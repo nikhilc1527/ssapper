@@ -6,6 +6,7 @@ edition = "2021"
 name = "ssapper"
 version.workspace = true
 edition.workspace = true
+default-run = "ssapper"
 
 [profile.test]
 inherits = "release"
@@ -43,3 +44,7 @@ temp-env = "0.3.6"
 rayon = "1.10.0"
 which = "6.0.3"
 sha256 = "1.5.0"
+rand = "0.8.5"
+textplots = "0.8.6"
+asciigraph = "0.10.1"
+hmath = "0.1.17"

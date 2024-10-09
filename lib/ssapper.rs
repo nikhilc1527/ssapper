@@ -10,7 +10,7 @@ use std::{
         OnceLock,
     },
     thread::scope,
-    time::Instant,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use sha256::digest;
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use which::which;
 
 /// sexp that depends on the hash of the current sexp as well as of all previous queries
-#[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq, Clone)]
 pub struct HashedSexp {
     hash: u64,
     sexp: Sexp,
@@ -121,6 +121,7 @@ fn query_db(conn: &mut Connection, s: &HashedSexp) -> Option<String> {
         .ok()
 }
 
+/// current state of the parser
 struct ParserState {
     linenum: usize,
     running: String,
@@ -133,7 +134,7 @@ struct SendCommand {
     sexp: HashedSexp,
 }
 
-// get response from child process, reading until the line that says DONE
+/// get response from child process, reading until the line that says DONE
 fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<String, std::io::Error> {
     // buf accumulates the entire response, which is read line-by-line
     // looking for the DONE marker.
@@ -158,7 +159,6 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
         }
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
-        // Z3 doesn't put quotes and CVC does (quotes do follow SMT-LIB)
 
         if last_line.starts_with("DONE") {
             let response = buf[..last_end].trim_end();
@@ -197,7 +197,7 @@ pub async fn parse_and_send_async(
 
     let (a, b) = scope(|s| {
         let subio_writer = s.spawn(|| sender(rx, &childin, conn));
-        let subio_reader = s.spawn(|| reciever(&mut childout));
+        let subio_reader = s.spawn(|| receiver(&mut childout));
         parser(&mut inlines, tx).expect("couldnt parse");
 
         let a = subio_writer.join().expect("couldnt join the writer");
@@ -210,7 +210,7 @@ pub async fn parse_and_send_async(
 }
 
 /// reads responses from solver subprocess
-fn reciever(childout: &mut BufReader<ChildStdout>) -> Vec<Query> {
+fn receiver(childout: &mut BufReader<ChildStdout>) -> Vec<Query> {
     let mut responses = Vec::new();
 
     while let Ok(r) = get_response(childout) {
@@ -235,11 +235,12 @@ fn sender(
     mut childin: &ChildStdin,
     conn: &mut Option<Connection>,
 ) -> Vec<Query> {
+    // storing Rc of hashedsexp in order to avoid cloning
     struct RcQuery(Rc<HashedSexp>, Option<String>, Option<Instant>);
 
     let mut cached_rcs = Vec::new();
 
-    let mut backlog: Vec<Rc<HashedSexp>> = Vec::new();
+    let mut backlog = Vec::new();
 
     while let Ok(sc1) = rx.recv() {
         if let Some(sc) = sc1 {
@@ -277,6 +278,7 @@ fn sender(
     writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
     writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
 
+    // cached_rcs
     cached_rcs
         .into_iter()
         .map(|RcQuery(a, b, c)| Query {
@@ -323,7 +325,11 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
     Ok(())
 }
 
-fn merge_results(conn: &mut Option<Connection>, a: Vec<Query>, b: Vec<Query>) -> Result<PerfLog> {
+fn merge_results(
+    conn: &mut Option<Connection>,
+    sender_res: Vec<Query>,
+    receiver_res: Vec<Query>,
+) -> Result<PerfLog> {
     let mut res: Vec<Query> = Vec::new();
     let mut cache_hits = 0;
     let mut cache_misses = 0;
@@ -333,7 +339,7 @@ fn merge_results(conn: &mut Option<Connection>, a: Vec<Query>, b: Vec<Query>) ->
         {
             let mut stmt = transaction
                 .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
-            for (q, p) in a.into_iter().zip(b.into_iter()) {
+            for (q, p) in sender_res.into_iter().zip(receiver_res.into_iter()) {
                 if let Some(cached) = &q.result {
                     if !cached.is_empty() {
                         res.push(q);
@@ -359,7 +365,7 @@ fn merge_results(conn: &mut Option<Connection>, a: Vec<Query>, b: Vec<Query>) ->
         }
         transaction.commit()?;
     } else {
-        a.into_iter().zip(b).for_each(|(x, y)| {
+        sender_res.into_iter().zip(receiver_res).for_each(|(x, y)| {
             let q = Query {
                 query: x.query,
                 result: y.result,
@@ -432,4 +438,70 @@ fn next_sexp(
         }
     }
     Err(Error::Other("eof".to_string()))
+}
+
+pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA journal_mode = WAL")?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_time TIMESTAMP NOT NULL,
+            cache_hits INTEGER NOT NULL,
+            cache_misses INTEGER NOT NULL
+        )",
+        [],
+    )
+    .expect("couldnt create runs table");
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS queries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            query TEXT NOT NULL,
+            response TEXT NOT NULL,
+            time_taken INTEGER NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES runs(id)
+        )",
+        [],
+    )
+    .expect("couldnt create queries table");
+
+    let trans = conn.transaction()?;
+    {
+        let run_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("couldnt get current time")
+            .as_secs();
+        trans.execute(
+            "INSERT INTO runs(run_time, cache_hits, cache_misses) VALUES (?1, ?2, ?3)",
+            params![run_time, log.cache_hits, log.cache_misses],
+        )?;
+
+        let run_id = trans.last_insert_rowid();
+
+        for query in &log.queries {
+            let time_taken = if let Some(start) = query.start_time {
+                if let Some(end) = query.end_time {
+                    end - start
+                } else {
+                    Duration::ZERO
+                }
+            } else {
+                Duration::ZERO
+            };
+            trans.execute(
+                "INSERT INTO queries (run_id, query, response, time_taken) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    run_id,
+                    format!("{}", query.query.as_ref().unwrap().sexp),
+                    query.result.as_ref().unwrap_or(&"".to_string()).to_string(),
+                    time_taken.as_nanos() as u64
+                ],
+            )?;
+        }
+    }
+    trans.commit()?;
+
+    Ok(())
 }

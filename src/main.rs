@@ -4,7 +4,7 @@
 use std::{
     env,
     fs::File,
-    io::{stdin, BufRead, BufReader, BufWriter, Write},
+    io::{stdin, BufRead, BufReader},
 };
 
 extern crate clap;
@@ -17,8 +17,9 @@ extern crate thiserror;
 use clap::Parser;
 
 use futures::executor::block_on;
+use rusqlite::Connection;
 use smtlib::{conf::SolverCmd, proc::SmtProc};
-use ssapper::{open_db, parse_and_send_async};
+use ssapper::{log_results, open_db, parse_and_send_async};
 
 /// Z3-like CLI options
 #[derive(Parser, Debug)]
@@ -80,11 +81,16 @@ fn main() {
     let outputs = block_on(outputs).expect("couldnt parse and send");
 
     if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
-        let f = File::create(perf_file).expect("failed to open perf file");
-        let mut w = BufWriter::new(f);
-        writeln!(w, "cache hits: {}", outputs.cache_hits).expect("failed to write to perf file");
-        writeln!(w, "cache misses: {}", outputs.cache_misses)
-            .expect("failed to write to perf file");
+        if let Ok(mut conn) = Connection::open(perf_file) {
+            log_results(&outputs, &mut conn).expect("couldnt log results");
+        } else {
+            println!("couldnt open connection");
+        }
+        // let f = File::create(perf_file).expect("failed to open perf file");
+        // let mut w = BufWriter::new(f);
+        // writeln!(w, "cache hits: {}", outputs.cache_hits).expect("failed to write to perf file");
+        // writeln!(w, "cache misses: {}", outputs.cache_misses)
+        //     .expect("failed to write to perf file");
     }
     let outputs = outputs.queries;
 
