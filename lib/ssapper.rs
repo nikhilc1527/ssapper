@@ -10,13 +10,14 @@ use std::{
         OnceLock,
     },
     thread::scope,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
+use chrono::Local;
 use sha256::digest;
 use smtlib::sexp::parse;
 
-use rusqlite::{params, Connection, Error as RusqliteError};
+use rusqlite::{params, Connection, Error as RusqliteError, OpenFlags};
 use thiserror::Error;
 
 use smtlib::{proc::SmtProc, sexp::Sexp};
@@ -91,22 +92,19 @@ impl PartialEq for Error {
     }
 }
 
-pub fn open_db<P: AsRef<Path>>(path: P) -> Result<Connection> {
-    let conn = Connection::open(path).expect("couldnt open connection to db");
+pub fn open_db<P: AsRef<Path>>(
+    path: P,
+    flags: OpenFlags,
+) -> std::result::Result<Connection, rusqlite::Error> {
+    let conn = Connection::open_with_flags(path, flags).expect("couldnt open connection to db");
+    // conn.busy_timeout(Duration::from_secs(5))?;
+
+    // let conn = Connection::open(path).expect("couldnt open connection to db");
+
+    // conn.busy_timeout(Duration::from_secs(2))
+    //     .expect("couldnt set timeout");
 
     conn.execute_batch("PRAGMA journal_mode = WAL")?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS computations (
-                 hash TEXT PRIMARY KEY,
-                 result_value TEXT NOT NULL
-                 )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
-        [],
-    )?;
 
     Ok(conn)
 }
@@ -135,7 +133,9 @@ struct SendCommand {
 }
 
 /// get response from child process, reading until the line that says DONE
-fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<String, std::io::Error> {
+fn get_response(
+    child: &mut BufReader<ChildStdout>,
+) -> std::result::Result<(String, i32), std::io::Error> {
     // buf accumulates the entire response, which is read line-by-line
     // looking for the DONE marker.
     let mut buf = String::new();
@@ -161,8 +161,9 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> std::result::Result<Strin
         let last_line = buf[last_end..last_end + n].trim_end();
 
         if last_line.starts_with("DONE") {
+            let a = last_line[4..].parse::<i32>().expect("couldnt get a");
             let response = buf[..last_end].trim_end();
-            return Ok(response.to_string());
+            return Ok((response.to_string(), a));
         }
     }
 }
@@ -213,10 +214,13 @@ pub async fn parse_and_send_async(
 fn receiver(childout: &mut BufReader<ChildStdout>) -> Vec<Query> {
     let mut responses = Vec::new();
 
-    while let Ok(r) = get_response(childout) {
+    while let Ok((r, a)) = get_response(childout) {
         if r == "EXIT" {
             break;
         } else {
+            if !r.is_empty() && a == 1 {
+                println!("{r}");
+            }
             responses.push(Query {
                 query: None,
                 result: if r.is_empty() { None } else { Some(r) },
@@ -247,22 +251,31 @@ fn sender(
             if let Some(conn) = conn {
                 let cached_result = query_db(conn, &sc.sexp);
                 let query_rc = Rc::new(sc.sexp);
-                backlog.push(Rc::clone(&query_rc));
                 if let Some(resp) = cached_result {
+                    backlog.push(Rc::clone(&query_rc));
                     cached_rcs.push(RcQuery(Rc::clone(&query_rc), Some(resp.to_string()), None));
+                    if !resp.is_empty() {
+                        println!("{resp}");
+                    }
                 } else {
                     for b in backlog.into_iter() {
                         writeln!(childin, "{}", b.sexp)
                             .expect("I/O error: failed to send to solver");
-                        writeln!(childin, r#"(echo "DONE")"#)
+                        writeln!(childin, r#"(echo "DONE0")"#,)
                             .expect("I/O error: failed to send to solver");
                     }
+                    writeln!(childin, "{}", query_rc.sexp)
+                        .expect("I/O error: failed to send to solver");
+                    writeln!(childin, r#"(echo "DONE1")"#,)
+                        .expect("I/O error: failed to send to solver");
+
                     cached_rcs.push(RcQuery(Rc::clone(&query_rc), None, Some(Instant::now())));
                     backlog = Vec::new();
                 };
             } else {
                 writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
-                writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+                writeln!(childin, r#"(echo "DONE1")"#)
+                    .expect("I/O error: failed to send to solver");
                 cached_rcs.push(RcQuery(Rc::new(sc.sexp), None, Some(Instant::now())));
             }
         } else {
@@ -271,12 +284,12 @@ fn sender(
     }
 
     for _ in 0..backlog.len() {
-        writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+        writeln!(childin, r#"(echo "DONE0")"#).expect("I/O error: failed to send to solver");
     }
     backlog.clear();
 
     writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
-    writeln!(childin, r#"(echo "DONE")"#).expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "DONE0")"#).expect("I/O error: failed to send to solver");
 
     // cached_rcs
     cached_rcs
@@ -298,6 +311,12 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
         line_has_stuff: false,
     };
 
+    // let mut bla = Builder::new()
+    //     .keep(true)
+    //     .prefix("tee")
+    //     .tempfile_in("tees")
+    //     .expect("couldnt open tmp file");
+
     let mut last_hash = 0;
 
     loop {
@@ -314,6 +333,8 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<Option<SendCommand>>) -> Re
             }
             Err(other) => return Err(other),
         };
+        // writeln!(bla, "{}", next_sexp.sexp).expect("bla");
+        // eprintln!("{}", next_sexp.sexp);
 
         last_hash = next_sexp.hash;
         tx.send(Some(SendCommand { sexp: next_sexp }))
@@ -335,7 +356,12 @@ fn merge_results(
     let mut cache_misses = 0;
 
     if let Some(conn) = conn {
-        let transaction = conn.transaction()?;
+        let mut conn2 = open_db(
+            conn.path().expect("couldnt get db path"),
+            OpenFlags::default(),
+        )
+        .expect("couldnt open conn2");
+        let transaction = conn2.transaction()?;
         {
             let mut stmt = transaction
                 .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
@@ -441,6 +467,11 @@ fn next_sexp(
 }
 
 pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
+    let mut conn = open_db(
+        conn.path().expect("couldnt get the path of db"),
+        OpenFlags::default(),
+    )
+    .expect("couldnt open db for writing");
     conn.execute_batch("PRAGMA journal_mode = WAL")?;
 
     conn.execute(
@@ -469,10 +500,8 @@ pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
 
     let trans = conn.transaction()?;
     {
-        let run_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("couldnt get current time")
-            .as_secs();
+        let run_time = Local::now().timestamp_micros();
+
         trans.execute(
             "INSERT INTO runs(run_time, cache_hits, cache_misses) VALUES (?1, ?2, ?3)",
             params![run_time, log.cache_hits, log.cache_misses],

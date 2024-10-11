@@ -4,6 +4,7 @@ use futures::executor::block_on;
 use io::BufReader;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use rusqlite::OpenFlags;
 use smtlib::conf::SolverCmd;
 use smtlib::proc::SmtProc;
 use ssapper::*;
@@ -18,7 +19,6 @@ use time::Instant;
 
 use rusqlite::Connection;
 use std::fs::*;
-use std::io::*;
 use std::process::*;
 use std::str::*;
 
@@ -223,7 +223,26 @@ pub fn test_integration_nocache() {
 pub fn test_integration_cache_empty() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db file"));
+    let mut conn = Some(
+        open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file"),
+    )
+    .map(|conn| {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS computations (
+                 hash TEXT PRIMARY KEY,
+                 result_value TEXT NOT NULL
+                 )",
+            [],
+        )
+        .expect("couldnt open conn");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+            [],
+        )
+        .expect("couldnt open conn");
+        conn
+    });
 
     for infile in INFILES {
         test_file(infile.to_string(), &mut conn, |_, _| {});
@@ -236,7 +255,26 @@ pub fn test_integration_cache_empty() {
 pub fn test_integration_cache_built() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db"));
+    let mut conn = Some(
+        open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file"),
+    )
+    .map(|conn| {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS computations (
+                 hash TEXT PRIMARY KEY,
+                 result_value TEXT NOT NULL
+                 )",
+            [],
+        )
+        .expect("couldnt open conn");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+            [],
+        )
+        .expect("couldnt open conn");
+        conn
+    });
 
     let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
 
@@ -261,7 +299,7 @@ pub fn test_integration_full_stainless() {
 
     let paths = read_dir("./testing_inputs/stainless_benchmarks/").unwrap();
 
-    let mut conn = Some(open_db(cache_file.path()).expect("couldnt open db"));
+    let mut conn = Some(open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db"));
 
     let paths_vec: Vec<String> = paths
         .map(|path| path.unwrap().path().display().to_string())

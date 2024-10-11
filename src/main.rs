@@ -7,17 +7,10 @@ use std::{
     io::{stdin, BufRead, BufReader},
 };
 
-extern crate clap;
-extern crate colored;
-extern crate peg;
-extern crate serde;
-extern crate smtlib;
-extern crate thiserror;
-
 use clap::Parser;
 
 use futures::executor::block_on;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use smtlib::{conf::SolverCmd, proc::SmtProc};
 use ssapper::{log_results, open_db, parse_and_send_async};
 
@@ -55,15 +48,11 @@ fn main() {
                     options: vec![],
                 },
             ),
-            Some(pos) => (
+            Some(_) => (
                 Box::new(stdin().lock()),
                 SolverCmd {
                     cmd: "z3".to_string(),
-                    args: {
-                        let mut o = opts.clone();
-                        o[pos] = "-in".to_string();
-                        o
-                    },
+                    args: opts.clone(),
                     options: vec![],
                 },
             ),
@@ -72,7 +61,25 @@ fn main() {
 
     let mut conn = env::var("SSAPPER_CACHE_FILE")
         .ok()
-        .map(|file| open_db(file).expect("couldnt open db"));
+        .map(|file| {
+            let conn = open_db(&file, OpenFlags::default())?;
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS computations (
+                 hash TEXT PRIMARY KEY,
+                 result_value TEXT NOT NULL
+                 )",
+                [],
+            )?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+                [],
+            )?;
+
+            let conn = open_db(file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            Ok(conn)
+        })
+        .map(|f: Result<Connection, rusqlite::Error>| f.expect("couldnt open cache file"));
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
@@ -80,21 +87,20 @@ fn main() {
 
     let outputs = block_on(outputs).expect("couldnt parse and send");
 
-    if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
-        if let Ok(mut conn) = Connection::open(perf_file) {
-            log_results(&outputs, &mut conn).expect("couldnt log results");
-        } else {
-            println!("couldnt open connection");
-        }
-        // let f = File::create(perf_file).expect("failed to open perf file");
-        // let mut w = BufWriter::new(f);
-        // writeln!(w, "cache hits: {}", outputs.cache_hits).expect("failed to write to perf file");
-        // writeln!(w, "cache misses: {}", outputs.cache_misses)
-        //     .expect("failed to write to perf file");
-    }
-    let outputs = outputs.queries;
+    // panic!("bla");
 
-    for out in outputs {
-        println!("{}", out.result.unwrap());
+    if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
+        let mut conn =
+            open_db(perf_file, OpenFlags::default()).expect("couldnt open perf file connection");
+        // if let Ok(mut conn) = open_db(perf_file, OpenFlags::default()) {
+        log_results(&outputs, &mut conn).expect("couldnt log results");
+        // } else {
+        //     eprintln!("couldnt open connection");
+        // }
     }
+    // let outputs = outputs.queries;
+
+    // for out in outputs {
+    //     println!("{}", out.result.unwrap());
+    // }
 }

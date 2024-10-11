@@ -7,3 +7,6 @@ testing_inputs/incremental
 testing_inputs/non-incremental
 
 .*sync*
+
+dafny_testing/cache*
+dafny_testing/perf
