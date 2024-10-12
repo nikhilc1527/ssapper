@@ -164,8 +164,8 @@ fn get_response(
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
 
-        if last_line.starts_with("DONE") {
-            let a = last_line[4..].parse::<i32>().expect("couldnt get a");
+        if let Some(stripped) = last_line.strip_prefix("DONE") {
+            let a = stripped.parse::<i32>().expect("couldnt get a");
             let response = buf[..last_end].trim_end();
             return Ok((response.to_string(), a));
         }
