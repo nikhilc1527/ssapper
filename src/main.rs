@@ -6,7 +6,7 @@ use std::{
 
 use clap::Parser;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::OpenFlags;
 use sha256::digest;
 use smtlib::{conf::SolverCmd, proc::SmtProc};
 use ssapper::{init_cache, log_results, open_db, parse_and_send_async, Z3_CHECKSUM};
@@ -73,21 +73,16 @@ fn main() {
         }
     };
 
-    let mut conn = env::var("SSAPPER_CACHE_FILE")
-        .ok()
-        .map(|file| {
-            let conn = open_db(&file, OpenFlags::default())?;
+    let conn = env::var("SSAPPER_CACHE_FILE").ok().inspect(|file| {
+        let conn = open_db(file, OpenFlags::default()).expect("couldnt open cache");
 
-            init_cache(&conn).expect("couldnt init cache db");
-
-            let conn = open_db(file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            Ok(conn)
-        })
-        .map(|f: Result<Connection, rusqlite::Error>| f.expect("couldnt open cache file"));
+        init_cache(&conn).expect("couldnt init cache db");
+    });
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
-    let outputs = parse_and_send_async(inlines, proc, &mut conn).expect("couldnt parse and send");
+    let outputs =
+        parse_and_send_async(inlines, proc, conn.as_deref()).expect("couldnt parse and send");
 
     // panic!("bla");
 
