@@ -1,4 +1,7 @@
-use std::{fmt::Display, time::Duration};
+use std::{
+    fmt::Display,
+    time::{Duration, Instant},
+};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};

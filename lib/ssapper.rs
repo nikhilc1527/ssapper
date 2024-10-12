@@ -200,13 +200,15 @@ enum Received {
     Response(String, Instant),
 }
 
-fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>) {
+fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>, Vec<usize>) {
     let mut queue_cache = VecDeque::new();
     let mut queue_response = VecDeque::new();
     let mut queries = Vec::new();
     let mut cache_hits = 0;
     let mut cache_misses = 0;
     let mut to_cache = Vec::new();
+
+    let mut to_log = Vec::new();
 
     while let Ok(rec) = rx.recv() {
         match rec {
@@ -216,6 +218,7 @@ fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>) {
                 if !r.is_empty() {
                     println!("{r}");
                     cache_hits += 1;
+                    to_log.push(queries.len() - 1);
                 }
                 queries.push(Response {
                     input: s,
@@ -231,6 +234,7 @@ fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>) {
             if !r.is_empty() {
                 println!("{r}");
                 cache_misses += 1;
+                to_log.push(queries.len() - 1);
             }
             queries.push(Response {
                 input: s.sexp,
@@ -249,6 +253,7 @@ fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>) {
             queries,
         },
         to_cache,
+        to_log,
     )
 }
 
@@ -257,15 +262,18 @@ pub fn parse_and_send_async(
     inlines: Box<dyn BufRead>,
     proc: SmtProc,
     conn: Option<&str>,
+    log_file: Option<&str>,
 ) -> Result<PerfLog> {
     let mut inlines = inlines;
 
     let (tx, rx) = channel();
     let (mergetx, mergerx) = channel();
 
-    let (childin, mut childout) = proc.take_childs();
+    let childin = proc.stdin;
+    let mut childout = proc.stdout;
+    let mut child = proc.child;
 
-    let ((log, to_cache), conn) = scope(|s| {
+    let ((log, to_cache, to_log), conn) = scope(|s| {
         let ta = mergetx.clone();
         let tb = mergetx.clone();
 
@@ -279,25 +287,40 @@ pub fn parse_and_send_async(
         subio_writer.join().expect("couldnt join the writer");
         subio_reader.join().expect("couldnt join the reader");
 
-        (merged.join().expect("couldnt join merger"), conn)
+        let x = (merged.join().expect("couldnt join merger"), conn);
+        x
     });
+    child.kill().expect("couldnt kill child");
 
-    if let Some(conn) = conn {
-        let mut conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
-        init_cache(&conn).expect("couldnt init cache");
+    scope(|s| {
+        s.spawn(|| {
+            if let Some(conn) = conn {
+                let mut conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
+                init_cache(&conn).expect("couldnt init cache");
 
-        let tx = conn.transaction().expect("couldnt start transaction");
-        {
-            let mut stmt =
-                tx.prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
+                let tx = conn.transaction().expect("couldnt start transaction");
+                {
+                    let mut stmt = tx
+                        .prepare_cached(
+                            "INSERT INTO computations (hash, result_value) VALUES (?1, ?2)",
+                        )
+                        .expect("couldnt prepare cached");
 
-            for (s, r) in to_cache {
-                stmt.execute(params![s.to_string(), r])
-                    .expect("couldnt update db with new entry");
+                    for (s, r) in to_cache {
+                        stmt.execute(params![s.to_string(), r])
+                            .expect("couldnt update db with new entry");
+                    }
+                }
+                tx.commit().expect("couldnt commit transaction");
             }
-        }
-        tx.commit().expect("couldnt commit transaction");
-    }
+        });
+
+        s.spawn(|| {
+            if let Some(log_file) = log_file {
+                log_results(&log, &to_log, log_file).expect("couldnt log results");
+            }
+        });
+    });
 
     Ok(log)
 }
@@ -370,12 +393,6 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()>
         line_has_stuff: false,
     };
 
-    // let mut bla = Builder::new()
-    //     .keep(true)
-    //     .prefix("tee")
-    //     .tempfile_in("tees")
-    //     .expect("couldnt open tmp file");
-
     let mut last_hash = 0;
 
     loop {
@@ -392,8 +409,6 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()>
             }
             Err(other) => return Err(other),
         };
-        // writeln!(bla, "{}", next_sexp.sexp).expect("bla");
-        // eprintln!("{}", next_sexp.sexp);
 
         last_hash = next_sexp.hash;
         tx.send(SendCommand { sexp: next_sexp })
@@ -402,72 +417,6 @@ fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()>
 
     Ok(())
 }
-
-// fn merge_results(
-//     conn: &mut Option<Connection>,
-//     sender_res: Vec<Query>,
-//     receiver_res: Vec<Query>,
-// ) -> Result<PerfLog> {
-//     let mut res: Vec<Query> = Vec::new();
-//     let mut cache_hits = 0;
-//     let mut cache_misses = 0;
-
-//     if let Some(conn) = conn {
-//         let mut conn2 = open_db(
-//             conn.path().expect("couldnt get db path"),
-//             OpenFlags::default(),
-//         )
-//         .expect("couldnt open conn2");
-//         let transaction = conn2.transaction()?;
-//         {
-//             let mut stmt = transaction
-//                 .prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
-//             for (q, p) in sender_res.into_iter().zip(receiver_res.into_iter()) {
-//                 if let Some(cached) = &q.result {
-//                     if !cached.is_empty() {
-//                         res.push(q);
-//                         cache_hits += 1;
-//                     }
-//                 } else {
-//                     stmt.execute(params![
-//                         q.query.as_ref().unwrap().hash.to_string(),
-//                         p.result.as_ref().unwrap_or(&"".to_string())
-//                     ])?;
-//                     if p.result.is_some() {
-//                         let s = Query {
-//                             query: q.query,
-//                             result: p.result,
-//                             start_time: q.start_time,
-//                             end_time: p.end_time,
-//                         };
-//                         res.push(s);
-//                         cache_misses += 1;
-//                     }
-//                 }
-//             }
-//         }
-//         transaction.commit()?;
-//     } else {
-//         sender_res.into_iter().zip(receiver_res).for_each(|(x, y)| {
-//             let q = Query {
-//                 query: x.query,
-//                 result: y.result,
-//                 start_time: x.start_time,
-//                 end_time: y.end_time,
-//             };
-//             if q.result.is_some() {
-//                 res.push(q);
-//                 cache_misses += 1;
-//             }
-//         });
-//     }
-
-//     Ok(PerfLog {
-//         queries: res,
-//         cache_hits,
-//         cache_misses,
-//     })
-// }
 
 fn next_sexp(
     inlines: &mut Box<dyn BufRead>,
@@ -549,7 +498,7 @@ pub fn init_perf(conn: &Connection) -> std::result::Result<(), RusqliteError> {
     Ok(())
 }
 
-pub fn log_results(log: &PerfLog, file_path: &str) -> Result<()> {
+pub fn log_results<T: AsRef<Path>>(log: &PerfLog, to_log: &[usize], file_path: T) -> Result<()> {
     let mut conn = open_db(file_path, OpenFlags::default())?;
     init_perf(&conn)?;
 
@@ -567,7 +516,8 @@ pub fn log_results(log: &PerfLog, file_path: &str) -> Result<()> {
         let mut stmt = trans.prepare_cached(
             "INSERT INTO queries (run_id, query, response, time_taken) VALUES (?1, ?2, ?3, ?4)",
         )?;
-        for query in &log.queries {
+        for l in to_log {
+            let query = &log.queries[*l];
             stmt.execute(params![
                 run_id,
                 format!("{}", query.input),

@@ -43,14 +43,20 @@ enum Status {
 /// SmtProc wraps an instance of a solver process.
 #[derive(Debug)]
 pub struct SmtProc {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    pub child: Child,
+    pub stdin: ChildStdin,
+    pub stdout: BufReader<ChildStdout>,
     tee: Option<Tee>,
     // signal to SmtPids that this process has terminated (so we don't try to
     // kill the process long afterward when the pid might have been reused)
     terminated: Arc<Mutex<Status>>,
 }
+
+// impl Drop for SmtProc {
+//     fn drop(&mut self) {
+//         self.child.kill().expect("couldnt kill child");
+//     }
+// }
 
 /// A handle to the SMT process for cancelling an in-progress check.
 #[derive(Clone)]
@@ -136,11 +142,6 @@ impl SmtPid {
 }
 
 impl SmtProc {
-    /// takes the stdin and stdout handles from the process
-    pub fn take_childs(self) -> (ChildStdin, BufReader<ChildStdout>) {
-        (self.stdin, self.stdout)
-    }
-
     /// Create a new SMT process by running a solver.
     ///
     /// The optional `tee` argument redirects all SMT output to a file, for

@@ -39,7 +39,7 @@ fn error_filter(s: String) -> String {
         .collect::<String>()
 }
 
-fn test_file(infile: String, conn: Option<&str>) -> PerfLog {
+fn test_file(infile: String, conn: Option<&str>, logfile: Option<&str>) -> PerfLog {
     let cmd = from_utf8(
         Command::new("z3")
             .arg(&infile)
@@ -62,7 +62,7 @@ fn test_file(infile: String, conn: Option<&str>) -> PerfLog {
         None,
     )
     .expect("couldnt start smt proc");
-    let resp = parse_and_send_async(Box::new(reader), proc, conn).expect("couldnt run");
+    let resp = parse_and_send_async(Box::new(reader), proc, conn, logfile).expect("couldnt run");
 
     let resp_str = resp
         .queries
@@ -179,7 +179,7 @@ pub fn test_integration_external() {
 #[test]
 pub fn test_integration_nocache() {
     for infile in INFILES {
-        test_file(infile.to_string(), None);
+        test_file(infile.to_string(), None, None);
     }
 }
 
@@ -191,6 +191,7 @@ pub fn test_integration_cache_empty() {
         test_file(
             infile.to_string(),
             Some(cache_file.path().to_str().unwrap()),
+            None,
         );
     }
 
@@ -208,6 +209,7 @@ pub fn test_integration_cache_built() {
             test_file(
                 infile.to_string(),
                 Some(cache_file.path().to_str().unwrap()),
+                None,
             );
         }
 
@@ -215,6 +217,7 @@ pub fn test_integration_cache_built() {
             let log = test_file(
                 infile.to_string(),
                 Some(cache_file.path().to_str().unwrap()),
+                None,
             );
 
             assert_eq!(log.cache_misses, 0);
@@ -236,20 +239,23 @@ pub fn test_perf() {
     let log = test_file(
         "./testing_inputs/small.smt2".to_string(),
         Some(cache_file.path().to_str().unwrap()),
+        perf_file.path().to_str(),
     );
-    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
 
     let log = test_file(
         "./testing_inputs/small.smt2".to_string(),
         Some(cache_file.path().to_str().unwrap()),
+        perf_file.path().to_str(),
     );
-    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
 
     let log = test_file(
         "./testing_inputs/small2.smt2".to_string(),
         Some(cache_file.path().to_str().unwrap()),
+        perf_file.path().to_str(),
     );
-    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
 
     let stats =
         get_stats(perf_file.path().to_str().unwrap().to_string()).expect("couldnt get stats");
@@ -279,6 +285,7 @@ pub fn test_integration_full_stainless() {
         test_file(
             infile.to_string(),
             Some(cache_file.path().to_str().unwrap()),
+            None,
         );
     });
     let s2 = Instant::now();
@@ -286,6 +293,7 @@ pub fn test_integration_full_stainless() {
         test_file(
             infile.to_string(),
             Some(cache_file.path().to_str().unwrap()),
+            None,
         );
     });
     let s3 = Instant::now();

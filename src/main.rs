@@ -9,7 +9,7 @@ use clap::Parser;
 use rusqlite::OpenFlags;
 use sha256::digest;
 use smtlib::{conf::SolverCmd, proc::SmtProc};
-use ssapper::{init_cache, log_results, open_db, parse_and_send_async, Z3_CHECKSUM};
+use ssapper::{init_cache, open_db, parse_and_send_async, Z3_CHECKSUM};
 use which::which;
 
 #[derive(Parser, Debug)]
@@ -81,14 +81,19 @@ fn main() {
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
-    let outputs =
-        parse_and_send_async(inlines, proc, conn.as_deref()).expect("couldnt parse and send");
+    let _outputs = parse_and_send_async(
+        inlines,
+        proc,
+        conn.as_deref(),
+        env::var("SSAPPER_PERF_FILE").ok().as_deref(),
+    )
+    .expect("couldnt parse and send");
 
     // panic!("bla");
 
-    if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
-        log_results(&outputs, &perf_file).expect("couldnt log results");
-    }
+    // if let Ok(perf_file) =  {
+    //     log_results(&outputs, &perf_file).expect("couldnt log results");
+    // }
     // let outputs = outputs.queries;
 
     // for out in outputs {
