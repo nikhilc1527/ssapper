@@ -1,5 +1,6 @@
+pub mod logging;
+
 use std::{
-    fs::read,
     hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Write},
     path::Path,
@@ -14,7 +15,6 @@ use std::{
 };
 
 use chrono::Local;
-use sha256::digest;
 use smtlib::sexp::parse;
 
 use rusqlite::{params, Connection, Error as RusqliteError, OpenFlags};
@@ -23,7 +23,6 @@ use thiserror::Error;
 use smtlib::{proc::SmtProc, sexp::Sexp};
 
 use serde::{Deserialize, Serialize};
-use which::which;
 
 /// sexp that depends on the hash of the current sexp as well as of all previous queries
 #[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq, Clone)]
@@ -32,17 +31,11 @@ pub struct HashedSexp {
     sexp: Sexp,
 }
 
-static Z3_CHECKSUM: OnceLock<String> = OnceLock::new();
+pub static Z3_CHECKSUM: OnceLock<String> = OnceLock::new();
 
 impl HashedSexp {
     fn new(prev_hash: u64, sexp: Sexp) -> Self {
-        let checksum = Z3_CHECKSUM.get_or_init(|| match which("z3") {
-            Ok(path) => {
-                let bytes = read(path).expect("couldnt read bytes of z3 binary");
-                digest(bytes)
-            }
-            Err(e) => panic!("could not find z3 binary: {}", e),
-        });
+        let checksum = Z3_CHECKSUM.get();
 
         let mut hasher = DefaultHasher::new();
         prev_hash.hash(&mut hasher);
@@ -96,17 +89,28 @@ pub fn open_db<P: AsRef<Path>>(
     path: P,
     flags: OpenFlags,
 ) -> std::result::Result<Connection, rusqlite::Error> {
-    let conn = Connection::open_with_flags(path, flags).expect("couldnt open connection to db");
-    // conn.busy_timeout(Duration::from_secs(5))?;
-
-    // let conn = Connection::open(path).expect("couldnt open connection to db");
-
-    // conn.busy_timeout(Duration::from_secs(2))
-    //     .expect("couldnt set timeout");
+    let conn = Connection::open_with_flags(path, flags)?;
 
     conn.execute_batch("PRAGMA journal_mode = WAL")?;
 
     Ok(conn)
+}
+
+pub fn init_cache(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS computations (
+                 hash TEXT PRIMARY KEY,
+                 result_value TEXT NOT NULL
+                 )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
+        [],
+    )?;
+
+    Ok(())
 }
 
 /// asks the database if the hashed sexp exists in the table
@@ -185,7 +189,7 @@ pub struct PerfLog {
 }
 
 /// given input stream, a process, and a possible connection to a database, run the process and return the output of the process while caching the results in the database
-pub async fn parse_and_send_async(
+pub fn parse_and_send_async(
     inlines: Box<dyn BufRead>,
     proc: SmtProc,
     conn: &mut Option<Connection>,
@@ -466,14 +470,7 @@ fn next_sexp(
     Err(Error::Other("eof".to_string()))
 }
 
-pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
-    let mut conn = open_db(
-        conn.path().expect("couldnt get the path of db"),
-        OpenFlags::default(),
-    )
-    .expect("couldnt open db for writing");
-    conn.execute_batch("PRAGMA journal_mode = WAL")?;
-
+pub fn init_perf(conn: &Connection) -> std::result::Result<(), RusqliteError> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -482,8 +479,7 @@ pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
             cache_misses INTEGER NOT NULL
         )",
         [],
-    )
-    .expect("couldnt create runs table");
+    )?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS queries (
@@ -495,8 +491,14 @@ pub fn log_results(log: &PerfLog, conn: &mut Connection) -> Result<()> {
             FOREIGN KEY(run_id) REFERENCES runs(id)
         )",
         [],
-    )
-    .expect("couldnt create queries table");
+    )?;
+
+    Ok(())
+}
+
+pub fn log_results(log: &PerfLog, file_path: &str) -> Result<()> {
+    let mut conn = open_db(file_path, OpenFlags::default())?;
+    init_perf(&conn)?;
 
     let trans = conn.transaction()?;
     {

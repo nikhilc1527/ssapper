@@ -1,6 +1,3 @@
-// #![feature(test)]
-// extern crate test;
-
 use std::{
     env,
     fs::File,
@@ -9,12 +6,12 @@ use std::{
 
 use clap::Parser;
 
-use futures::executor::block_on;
 use rusqlite::{Connection, OpenFlags};
+use sha256::digest;
 use smtlib::{conf::SolverCmd, proc::SmtProc};
-use ssapper::{log_results, open_db, parse_and_send_async};
+use ssapper::{init_cache, log_results, open_db, parse_and_send_async, Z3_CHECKSUM};
+use which::which;
 
-/// Z3-like CLI options
 #[derive(Parser, Debug)]
 #[command(name = "ssapper")]
 #[command(allow_hyphen_values = true)]
@@ -26,10 +23,27 @@ struct Cli {
 
 /// all options taken from env variables
 /// OPTIONS:
-/// SSAPPER_CACHE_FILE: path to file where queries cache should be stored
+/// SSAPPER_CACHE_FILE:  path to file where queries cache should be stored
+/// SSAPPER_PERF_FILE:   path to file where cache hits/misses and timing information should be stored
+/// SSAPPER_SOLVER_PATH: path to underlying z3 solver binary
 fn main() {
-    // setup solvers
-    let opts = Cli::parse().opts;
+    let cli = Cli::parse();
+    let opts = cli.opts;
+
+    let z3_path = match env::var("SSAPPER_SOLVER_PATH") {
+        Ok(path) => path,
+        Err(_) => match which("z3") {
+            Ok(path) => path
+                .to_str()
+                .expect("couldnt get valid z3 path")
+                .to_string(),
+            Err(e) => panic!("could not find z3 binary: {}", e),
+        },
+    };
+
+    Z3_CHECKSUM
+        .set(digest(&z3_path))
+        .expect("couldnt set z3 path");
 
     let (inlines, cmd): (Box<dyn BufRead>, SolverCmd) = {
         match opts.iter().position(|x| x == "-in") {
@@ -38,7 +52,7 @@ fn main() {
                     File::open(opts.last().unwrap()).expect("could not open file"),
                 )),
                 SolverCmd {
-                    cmd: "z3".to_string(),
+                    cmd: z3_path,
                     args: {
                         let mut o = opts.clone();
                         o.pop();
@@ -51,7 +65,7 @@ fn main() {
             Some(_) => (
                 Box::new(stdin().lock()),
                 SolverCmd {
-                    cmd: "z3".to_string(),
+                    cmd: z3_path,
                     args: opts.clone(),
                     options: vec![],
                 },
@@ -63,18 +77,8 @@ fn main() {
         .ok()
         .map(|file| {
             let conn = open_db(&file, OpenFlags::default())?;
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS computations (
-                 hash TEXT PRIMARY KEY,
-                 result_value TEXT NOT NULL
-                 )",
-                [],
-            )?;
 
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
-                [],
-            )?;
+            init_cache(&conn).expect("couldnt init cache db");
 
             let conn = open_db(file, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             Ok(conn)
@@ -83,20 +87,12 @@ fn main() {
 
     let proc = SmtProc::new(cmd, None).expect("failed to start z3 proc");
 
-    let outputs = parse_and_send_async(inlines, proc, &mut conn);
-
-    let outputs = block_on(outputs).expect("couldnt parse and send");
+    let outputs = parse_and_send_async(inlines, proc, &mut conn).expect("couldnt parse and send");
 
     // panic!("bla");
 
     if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
-        let mut conn =
-            open_db(perf_file, OpenFlags::default()).expect("couldnt open perf file connection");
-        // if let Ok(mut conn) = open_db(perf_file, OpenFlags::default()) {
-        log_results(&outputs, &mut conn).expect("couldnt log results");
-        // } else {
-        //     eprintln!("couldnt open connection");
-        // }
+        log_results(&outputs, &perf_file).expect("couldnt log results");
     }
     // let outputs = outputs.queries;
 

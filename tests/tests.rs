@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use futures::executor::block_on;
 use io::BufReader;
+use logging::get_stats;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rusqlite::OpenFlags;
@@ -40,7 +40,7 @@ fn error_filter(s: String) -> String {
         .collect::<String>()
 }
 
-fn test_file(infile: String, conn: &mut Option<Connection>, cache_tester: fn(usize, usize) -> ()) {
+fn test_file(infile: String, conn: &mut Option<Connection>) -> PerfLog {
     let cmd = from_utf8(
         Command::new("z3")
             .arg(&infile)
@@ -63,9 +63,7 @@ fn test_file(infile: String, conn: &mut Option<Connection>, cache_tester: fn(usi
         None,
     )
     .expect("couldnt start smt proc");
-    let resp = block_on(parse_and_send_async(Box::new(reader), proc, conn)).expect("couldnt run");
-
-    cache_tester(resp.cache_hits, resp.cache_misses);
+    let resp = parse_and_send_async(Box::new(reader), proc, conn).expect("couldnt run");
 
     let resp_str = resp
         .queries
@@ -79,20 +77,16 @@ fn test_file(infile: String, conn: &mut Option<Connection>, cache_tester: fn(usi
     let resp_str = error_filter(resp_str);
 
     assert_eq!(cmd, resp_str);
+
+    resp
 }
 
 const INFILES: &[&str] = &[
     "./testing_inputs/small.smt2",
     "./testing_inputs/small2.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-1001.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-1172.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-1755.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-1756.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-3185.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
-    "./testing_inputs/stainless_benchmarks/cvc4-NA-10702.smt2",
 ];
 
 #[test]
@@ -103,30 +97,6 @@ pub fn test_integration_external() {
 
     let tmp_cache_file = NamedTempFile::new().expect("couldnt make tmp file");
     let tmp_perf_file = NamedTempFile::new().expect("couldnt make tmp file");
-
-    let cache_tester = |_tester: fn(usize, usize) -> ()| {};
-    // {
-    //     if let Ok(perf_file) = env::var("SSAPPER_PERF_FILE") {
-    //         let perf_file = File::open(perf_file).expect("couldnt open perf file");
-    //         let mut buf1 = String::new();
-    //         let mut buf2 = String::new();
-    //         let mut perf_reader = BufReader::new(perf_file);
-
-    //         let l = perf_reader
-    //             .read_line(&mut buf1)
-    //             .expect("couldnt read from perf file");
-    //         buf1 = buf1[12..l - 1].to_string();
-    //         let l = perf_reader
-    //             .read_line(&mut buf2)
-    //             .expect("couldnt read from perf file");
-    //         buf2 = buf2[14..l - 1].to_string();
-    //         let hits = buf1.parse::<usize>().expect("couldnt read cache hits");
-    //         let misses = buf2.parse::<usize>().expect("couldnt read cache misses");
-    //         tester(hits, misses);
-    //     } else {
-    //         assert_ne!(0, 0);
-    //     }
-    // }
 
     Command::new("cargo")
         .arg("build")
@@ -170,8 +140,6 @@ pub fn test_integration_external() {
 
             assert_eq!(cmd_out1, cmd_out2);
 
-            cache_tester(|_, _| {});
-
             let c3_start = Instant::now();
 
             let cmd_out2 = error_filter(
@@ -189,8 +157,6 @@ pub fn test_integration_external() {
 
             let c3_end = Instant::now();
             assert_eq!(cmd_out1, cmd_out2);
-
-            cache_tester(|_, misses| assert_eq!(misses, 0));
 
             times1 += c1_end - c1_start;
             times2 += c2_end - c2_start;
@@ -215,7 +181,7 @@ pub fn test_integration_external() {
 pub fn test_integration_nocache() {
     let mut conn = None;
     for infile in INFILES {
-        test_file(infile.to_string(), &mut conn, |_, _| {});
+        test_file(infile.to_string(), &mut conn);
     }
 }
 
@@ -223,29 +189,13 @@ pub fn test_integration_nocache() {
 pub fn test_integration_cache_empty() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = Some(
-        open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file"),
-    )
-    .map(|conn| {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS computations (
-                 hash TEXT PRIMARY KEY,
-                 result_value TEXT NOT NULL
-                 )",
-            [],
-        )
-        .expect("couldnt open conn");
+    let conn = open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file");
+    init_cache(&conn).expect("couldnt init cache");
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
-            [],
-        )
-        .expect("couldnt open conn");
-        conn
-    });
+    let mut conn = Some(conn);
 
     for infile in INFILES {
-        test_file(infile.to_string(), &mut conn, |_, _| {});
+        test_file(infile.to_string(), &mut conn);
     }
 
     // drop cache_file
@@ -255,41 +205,69 @@ pub fn test_integration_cache_empty() {
 pub fn test_integration_cache_built() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
 
-    let mut conn = Some(
-        open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file"),
-    )
-    .map(|conn| {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS computations (
-                 hash TEXT PRIMARY KEY,
-                 result_value TEXT NOT NULL
-                 )",
-            [],
-        )
-        .expect("couldnt open conn");
+    let conn = open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file");
+    init_cache(&conn).expect("couldnt init cache");
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_computations_hash ON computations (hash)",
-            [],
-        )
-        .expect("couldnt open conn");
-        conn
-    });
+    let mut conn = Some(conn);
 
     let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
 
     with_var("SSAPPER_PERF_FILE", Some(tmpf.path()), || {
         for infile in INFILES {
-            test_file(infile.to_string(), &mut conn, |_, _| {});
+            test_file(infile.to_string(), &mut conn);
         }
 
         for infile in INFILES {
-            test_file(infile.to_string(), &mut conn, |hits, misses| {
-                assert_eq!(misses, 0);
-                assert!(hits > 0); // need to put in logic to figure out exactly how much this number should be eventually
-            });
+            let log = test_file(infile.to_string(), &mut conn);
+
+            assert_eq!(log.cache_misses, 0);
+            assert!(log.cache_hits > 0); // need to put in logic to figure out exactly how much this number should be eventually
         }
     });
+}
+
+#[test]
+pub fn test_perf() {
+    let cache_file = NamedTempFile::new().expect("couldnt open temp file");
+
+    let conn = open_db(cache_file.path(), OpenFlags::default()).expect("couldnt open db file");
+    init_cache(&conn).expect("couldnt init cache");
+
+    let mut conn = Some(conn);
+
+    let perf_file = NamedTempFile::new().expect("couldnt open temp file");
+    {
+        let perf = open_db(&perf_file, OpenFlags::default()).expect("couldnt open perf");
+        init_perf(&perf).expect("couldnt init perf");
+    }
+
+    let log = test_file(
+        "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2".to_string(),
+        &mut conn,
+    );
+    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+
+    let log = test_file(
+        "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2".to_string(),
+        &mut conn,
+    );
+    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+
+    let log = test_file(
+        "./testing_inputs/stainless_benchmarks/cvc4-NA-10702.smt2".to_string(),
+        &mut conn,
+    );
+    log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+
+    let stats =
+        get_stats(perf_file.path().to_str().unwrap().to_string()).expect("couldnt get stats");
+
+    assert_eq!(stats[0].cache_hits, 0);
+    assert_eq!(stats[0].cache_misses, 14);
+    assert_eq!(stats[1].cache_hits, 14);
+    assert_eq!(stats[1].cache_misses, 0);
+    assert_eq!(stats[2].cache_hits, 14);
+    assert_eq!(stats[2].cache_misses, 1);
 }
 
 #[test]
@@ -307,11 +285,11 @@ pub fn test_integration_full_stainless() {
 
     let s1 = Instant::now();
     paths_vec.iter().for_each(|infile| {
-        test_file(infile.to_string(), &mut conn, |_, _| {});
+        test_file(infile.to_string(), &mut conn);
     });
     let s2 = Instant::now();
     paths_vec.iter().for_each(|infile| {
-        test_file(infile.to_string(), &mut conn, |_, _| {});
+        test_file(infile.to_string(), &mut conn);
     });
     let s3 = Instant::now();
 

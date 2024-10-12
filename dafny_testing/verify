@@ -2,6 +2,8 @@
 
 set -e
 
+. ./setup.sh
+
 # if uname -a | grep -q Darwin; then
 
 #     dafny="/usr/local/lib/dafny/dafny /timeLimit:20 /compile:0  /allowGlobals /noNLarith /autoTriggers:1 /vcsCores:4"
@@ -18,8 +20,9 @@ set -e
 # fi
 
 cargo build --release
-alias dafny="./dafny /p:PROVER_PATH=../target/release/ssapper /randomSeed:1234 /compile:0"
-# alias dafny="./dafny /randomSeed:1234 /compile:0"
+
+# alias dafny="./dafny /compile:0 /randomSeed:1234"
+alias dafny="run_dafny"
 
 ### Definition Files 
 echo ""
@@ -30,33 +33,33 @@ dafny network.dfy
 dafny synod.dfy
 
 
-# # Proof Files
-# echo ""
-# echo "Verifying proof_validity.dfy"
-# dafny proof_validity.dfy
+# Proof Files
+echo ""
+echo "Verifying proof_validity.dfy"
+dafny proof_validity.dfy
 
-# echo ""
-# echo "Verifying proof_agreement_invariants.dfy"
-# dafny proof_agreement_invariants.dfy
+echo ""
+echo "Verifying proof_agreement_invariants.dfy"
+dafny proof_agreement_invariants.dfy
 
-# echo ""
-# echo "Verifying proof_axioms.dfy"
-# dafny proof_axioms.dfy
+echo ""
+echo "Verifying proof_axioms.dfy"
+dafny proof_axioms.dfy
 
-# echo ""
-# echo "Verifying proof_helper.dfy"
-# dafny proof_helper.dfy
+echo ""
+echo "Verifying proof_helper.dfy"
+dafny proof_helper.dfy
 
-# echo ""
-# echo "Verifying proof_agreement_chosenProperties1.dfy"
-# dafny proof_agreement_chosenProperties1.dfy
+echo ""
+echo "Verifying proof_agreement_chosenProperties1.dfy"
+dafny proof_agreement_chosenProperties1.dfy
 
-# echo ""
-# echo "Verifying proof_agreement_chosenProperties2.dfy"
-# dafny proof_agreement_chosenProperties2.dfy
+echo ""
+echo "Verifying proof_agreement_chosenProperties2.dfy"
+dafny proof_agreement_chosenProperties2.dfy
 
-# echo ""
-# echo "Verifying proof_agreement.dfy"
-# dafny proof_agreement.dfy
+echo ""
+echo "Verifying proof_agreement.dfy"
+dafny proof_agreement.dfy
 
 echo "Done"

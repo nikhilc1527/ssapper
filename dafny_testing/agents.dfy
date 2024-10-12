@@ -18,8 +18,8 @@ datatype Acceptor = Acceptor(
 /* Acceptor initial state */
 predicate AcceptorInit(a:Acceptor, id:Id) {
     && a.consts == AConsts(id)
-    && a.promised == Bottom
     && a.accepted == VB(Nil, Bottom)
+    && a.promised == Bottom
 }
 
 /* Acceptor next state */
@@ -60,9 +60,9 @@ predicate AcceptorPromise(a:Acceptor, a':Acceptor, recvIo:Packet, sendIos:seq<Pa
     && a'.promised == recvIo.msg.bal
     && a'.accepted == a.accepted
     && |sendIos| == 1
-    && sendIos[0].src == a.consts.id
     && sendIos[0].dst == recvIo.src
     && sendIos[0].msg == Promise(recvIo.msg.bal, a.accepted)
+    && sendIos[0].src == a.consts.id
 }
 
 /* Acceptor send Accept */
