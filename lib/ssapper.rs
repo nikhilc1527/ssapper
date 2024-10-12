@@ -274,13 +274,7 @@ pub fn parse_and_send_async(
         let merged = s.spawn(|| merger(mergerx));
         parser(&mut inlines, tx).expect("couldnt parse");
 
-        let conn = if let Some(conn) = conn {
-            let conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
-            init_cache(&conn).expect("couldnt init cache");
-            Some(conn)
-        } else {
-            None
-        };
+        drop(mergetx);
 
         subio_writer.join().expect("couldnt join the writer");
         subio_reader.join().expect("couldnt join the reader");
@@ -288,9 +282,9 @@ pub fn parse_and_send_async(
         (merged.join().expect("couldnt join merger"), conn)
     });
 
-    if let Some(mut conn) = conn {
-        // let mut conn2 = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
-        // init_cache(&conn2).expect("couldnt init cache");
+    if let Some(conn) = conn {
+        let mut conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
+        init_cache(&conn).expect("couldnt init cache");
 
         let tx = conn.transaction().expect("couldnt start transaction");
         {

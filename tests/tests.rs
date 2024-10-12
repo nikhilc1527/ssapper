@@ -17,7 +17,6 @@ use tempfile::NamedTempFile;
 use time::Duration;
 use time::Instant;
 
-use rusqlite::Connection;
 use std::fs::*;
 use std::process::*;
 use std::str::*;
