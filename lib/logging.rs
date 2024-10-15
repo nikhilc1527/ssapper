@@ -64,7 +64,7 @@ impl QueryEntry {
     }
 }
 
-pub fn get_stats(stats_file: String) -> Result<Vec<RunEntry>, rusqlite::Error> {
+pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>, rusqlite::Error> {
     let conn = Connection::open(stats_file).expect("couldnt open connection to database");
     let mut stmt = conn.prepare("SELECT * FROM runs")?;
 

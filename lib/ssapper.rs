@@ -297,7 +297,7 @@ pub fn parse_and_send_async(
     child.kill().expect("couldnt kill child");
 
     scope(|s| {
-        s.spawn(|| {
+        let a = s.spawn(|| {
             if let Some(conn) = conn {
                 let mut conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
                 init_cache(&conn).expect("couldnt init cache");
@@ -319,11 +319,14 @@ pub fn parse_and_send_async(
             }
         });
 
-        s.spawn(|| {
+        let b = s.spawn(|| {
             if let Some(log_file) = log_file {
                 log_results(&log, &to_log, log_file).expect("couldnt log results");
             }
         });
+
+        b.join().expect("couldnt join b");
+        a.join().expect("couldnt join a");
     });
 
     Ok(log)

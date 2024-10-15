@@ -87,7 +87,7 @@ pub fn main() -> Result<(), rusqlite::Error> {
             hist,
             summary,
         } => {
-            let stats = get_stats(stats_file)?;
+            let stats = get_stats(&stats_file)?;
             if summary {
                 print_summary(&stats);
             }
