@@ -207,29 +207,32 @@ pub fn test_integration_cache_empty() {
 #[test]
 pub fn test_integration_cache_built() {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
-
     let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
 
-    with_var("SSAPPER_PERF_FILE", Some(tmpf.path()), || {
-        for infile in INFILES {
-            test_file(
-                infile.to_string(),
-                Some(cache_file.path().to_str().unwrap()),
-                None,
-            );
-        }
+    // with_var("SSAPPER_PERF_FILE", Some(tmpf.path()), || {
+    let i1 = Instant::now();
+    for infile in INFILES {
+        test_file(
+            infile.to_string(),
+            Some(cache_file.path().to_str().unwrap()),
+            Some(tmpf.path().to_str().unwrap()),
+        );
+    }
+    println!("i1: {:?}", i1.elapsed());
+    let i2 = Instant::now();
 
-        for infile in INFILES {
-            let log = test_file(
-                infile.to_string(),
-                Some(cache_file.path().to_str().unwrap()),
-                None,
-            );
+    for infile in INFILES {
+        let log = test_file(
+            infile.to_string(),
+            Some(cache_file.path().to_str().unwrap()),
+            Some(tmpf.path().to_str().unwrap()),
+        );
 
-            assert_eq!(log.cache_misses, 0);
-            assert!(log.cache_hits > 0); // need to put in logic to figure out exactly how much this number should be eventually
-        }
-    });
+        assert_eq!(log.cache_misses, 0);
+        assert!(log.cache_hits > 0); // need to put in logic to figure out exactly how much this number should be eventually
+    }
+    println!("i2: {:?}", i2.elapsed());
+    // });
 }
 
 #[test]
