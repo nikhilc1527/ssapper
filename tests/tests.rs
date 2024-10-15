@@ -62,7 +62,8 @@ fn test_file(infile: String, conn: Option<&str>, logfile: Option<&str>) -> PerfL
         None,
     )
     .expect("couldnt start smt proc");
-    let resp = parse_and_send_async(Box::new(reader), proc, conn, logfile).expect("couldnt run");
+    let resp =
+        parse_and_send_async(Box::new(reader), proc, conn, logfile, false).expect("couldnt run");
 
     let resp_str = resp
         .queries
@@ -103,7 +104,7 @@ pub fn test_integration_external() {
         .output()
         .expect("couldnt run cargo build release");
 
-    let test = || {
+    let mut test = || {
         for infile in INFILES {
             let c1_start = Instant::now();
 
@@ -161,6 +162,12 @@ pub fn test_integration_external() {
             times2 += c2_end - c2_start;
             times3 += c3_end - c3_start;
         }
+        println!("z3 total time: {:?}", times1);
+        println!("ssapper cold: {:?}", times2);
+        println!("ssapper warm: {:?}", times3);
+        times1 = Duration::ZERO;
+        times2 = Duration::ZERO;
+        times3 = Duration::ZERO;
     };
 
     with_vars(
@@ -168,19 +175,18 @@ pub fn test_integration_external() {
             ("SSAPPER_PERF_FILE", Some(tmp_perf_file.path())),
             ("SSAPPER_CACHE_FILE", Some(tmp_cache_file.path())),
         ],
-        test,
+        &mut test,
     );
-
-    println!("z3 total time: {:?}", times1);
-    println!("ssapper cold: {:?}", times2);
-    println!("ssapper warm: {:?}", times3);
+    println!();
 }
 
 #[test]
 pub fn test_integration_nocache() {
+    let i1 = Instant::now();
     for infile in INFILES {
         test_file(infile.to_string(), None, None);
     }
+    println!("no cache: {:?}", i1.elapsed());
 }
 
 #[test]
@@ -241,32 +247,34 @@ pub fn test_perf() {
         Some(cache_file.path().to_str().unwrap()),
         perf_file.path().to_str(),
     );
-    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    assert_eq!(log.cache_hits, 0);
+    assert_eq!(log.cache_misses, 1);
 
     let log = test_file(
         "./testing_inputs/small.smt2".to_string(),
         Some(cache_file.path().to_str().unwrap()),
         perf_file.path().to_str(),
     );
-    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    assert_eq!(log.cache_hits, 1);
+    assert_eq!(log.cache_misses, 0);
 
     let log = test_file(
         "./testing_inputs/small2.smt2".to_string(),
         Some(cache_file.path().to_str().unwrap()),
         perf_file.path().to_str(),
     );
-    // log_results(&log, perf_file.path().to_str().unwrap()).expect("couldnt log results");
+    assert_eq!(log.cache_hits, 1);
+    assert_eq!(log.cache_misses, 1);
 
     let stats =
         get_stats(perf_file.path().to_str().unwrap().to_string()).expect("couldnt get stats");
 
-    println!("{stats:?}");
-    // assert_eq!(stats[0].cache_hits, 0);
-    // assert_eq!(stats[0].cache_misses, 14);
-    // assert_eq!(stats[1].cache_hits, 14);
-    // assert_eq!(stats[1].cache_misses, 0);
-    // assert_eq!(stats[2].cache_hits, 14);
-    // assert_eq!(stats[2].cache_misses, 1);
+    assert_eq!(stats[0].cache_hits, 0);
+    assert_eq!(stats[0].cache_misses, 1);
+    assert_eq!(stats[1].cache_hits, 1);
+    assert_eq!(stats[1].cache_misses, 0);
+    assert_eq!(stats[2].cache_hits, 1);
+    assert_eq!(stats[2].cache_misses, 1);
 }
 
 #[test]
@@ -281,20 +289,26 @@ pub fn test_integration_full_stainless() {
         .collect();
 
     let s1 = Instant::now();
-    paths_vec.iter().for_each(|infile| {
+    paths_vec.iter().enumerate().for_each(|(i, infile)| {
         test_file(
             infile.to_string(),
             Some(cache_file.path().to_str().unwrap()),
             None,
         );
+        if i % 100 == 0 {
+            println!("{i}: {:?}", s1.elapsed());
+        }
     });
     let s2 = Instant::now();
-    paths_vec.iter().for_each(|infile| {
+    paths_vec.iter().enumerate().for_each(|(i, infile)| {
         test_file(
             infile.to_string(),
             Some(cache_file.path().to_str().unwrap()),
             None,
         );
+        if i % 100 == 0 {
+            println!("{i}: {:?}", s1.elapsed());
+        }
     });
     let s3 = Instant::now();
 

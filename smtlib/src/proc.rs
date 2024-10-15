@@ -43,8 +43,11 @@ enum Status {
 /// SmtProc wraps an instance of a solver process.
 #[derive(Debug)]
 pub struct SmtProc {
+    /// child process
     pub child: Child,
+    /// stdin of child process
     pub stdin: ChildStdin,
+    /// stdout of child process
     pub stdout: BufReader<ChildStdout>,
     tee: Option<Tee>,
     // signal to SmtPids that this process has terminated (so we don't try to

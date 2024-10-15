@@ -200,7 +200,7 @@ enum Received {
     Response(String, Instant),
 }
 
-fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>, Vec<usize>) {
+fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)>, Vec<usize>) {
     let mut queue_cache = VecDeque::new();
     let mut queue_response = VecDeque::new();
     let mut queries = Vec::new();
@@ -216,7 +216,9 @@ fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>, Vec<usize>
             Received::CacheMiss(s, i1) => queue_cache.push_back((s, i1)),
             Received::CacheHit(s, r) => {
                 if !r.is_empty() {
-                    println!("{r}");
+                    if print {
+                        println!("{r}");
+                    }
                     cache_hits += 1;
                     to_log.push(queries.len() - 1);
                 }
@@ -232,7 +234,9 @@ fn merger(rx: Receiver<Received>) -> (PerfLog, Vec<(String, String)>, Vec<usize>
             let (r, i2) = queue_response.pop_front().unwrap();
 
             if !r.is_empty() {
-                println!("{r}");
+                if print {
+                    println!("{r}");
+                }
                 cache_misses += 1;
                 to_log.push(queries.len() - 1);
             }
@@ -263,6 +267,7 @@ pub fn parse_and_send_async(
     proc: SmtProc,
     conn: Option<&str>,
     log_file: Option<&str>,
+    print: bool,
 ) -> Result<PerfLog> {
     let mut inlines = inlines;
 
@@ -279,7 +284,7 @@ pub fn parse_and_send_async(
 
         let subio_writer = s.spawn(|| sender(rx, &childin, conn, ta));
         let subio_reader = s.spawn(|| receiver(&mut childout, tb));
-        let merged = s.spawn(|| merger(mergerx));
+        let merged = s.spawn(|| merger(mergerx, print));
         parser(&mut inlines, tx).expect("couldnt parse");
 
         drop(mergetx);
@@ -287,8 +292,7 @@ pub fn parse_and_send_async(
         subio_writer.join().expect("couldnt join the writer");
         subio_reader.join().expect("couldnt join the reader");
 
-        let x = (merged.join().expect("couldnt join merger"), conn);
-        x
+        (merged.join().expect("couldnt join merger"), conn)
     });
     child.kill().expect("couldnt kill child");
 

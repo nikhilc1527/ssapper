@@ -86,6 +86,7 @@ fn main() {
         proc,
         conn.as_deref(),
         env::var("SSAPPER_PERF_FILE").ok().as_deref(),
+        true,
     )
     .expect("couldnt parse and send");
 
