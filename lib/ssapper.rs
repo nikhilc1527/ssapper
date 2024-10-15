@@ -113,16 +113,6 @@ pub fn init_cache(conn: &Connection) -> std::result::Result<(), rusqlite::Error>
     Ok(())
 }
 
-/// asks the database if the hashed sexp exists in the table
-fn query_db(conn: &Connection, s: &HashedSexp) -> Option<String> {
-    let mut query_stmt = conn
-        .prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
-        .expect("couldnt get response from db");
-    query_stmt
-        .query_row(params![s.hash.to_string()], |row| row.get(0))
-        .ok()
-}
-
 /// current state of the parser
 struct ParserState {
     linenum: usize,
@@ -200,6 +190,7 @@ enum Received {
     Response(String, Instant),
 }
 
+// returns: perflog, to_cache(string to response), to_log (vec of indices into perflog queries)
 fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)>, Vec<usize>) {
     let mut queue_cache = VecDeque::new();
     let mut queue_response = VecDeque::new();
@@ -358,9 +349,16 @@ fn sender(
         .map(|c| open_db(c, OpenFlags::default()).expect("couldnt open conn"))
         .inspect(|c| init_cache(c).expect("couldnt init cache"));
 
+    let mut query_stmt = conn.as_ref().map(|f| {
+        f.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
+            .expect("couldnt get response from db")
+    });
+
     while let Ok(sc) = rx.recv() {
-        if let Some(conn) = &conn {
-            let cached_result = query_db(conn, &sc.sexp);
+        if let Some(query_stmt) = query_stmt.as_mut() {
+            let cached_result: Option<String> = query_stmt
+                .query_row(params![&sc.sexp.hash.to_string()], |row| row.get(0))
+                .ok();
             if let Some(resp) = cached_result {
                 tx.send(Received::CacheHit(sc.sexp.sexp.clone(), resp.to_string()))
                     .expect("couldnt send cache to tx");
