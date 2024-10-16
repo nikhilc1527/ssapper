@@ -30,6 +30,13 @@ path = "lib/ssapper.rs"
 test = false
 doctest = false
 
+[[bench]]
+name = "bench"
+path = "benches/bench.rs"
+harness = false
+
+[profile.bench]
+inherits = "release"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -49,3 +56,6 @@ which = "6.0.3"
 sha256 = "1.5.0"
 chrono = "0.4.38"
 termplot = "0.1.1"
+
+[dev-dependencies]
+criterion = { version = "0.4", features = ["html_reports"] }
