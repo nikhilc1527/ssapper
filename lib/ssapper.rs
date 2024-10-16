@@ -122,7 +122,7 @@ struct ParserState {
 }
 
 #[derive(Debug)]
-struct SendCommand {
+pub struct SendCommand {
     sexp: HashedSexp,
 }
 
@@ -390,7 +390,7 @@ fn sender(
     writeln!(childin, r#"(echo "DONE0")"#).expect("I/O error: failed to send to solver");
 }
 
-fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()> {
+pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()> {
     let mut parser = ParserState {
         linenum: 0,
         running: "".to_string(),

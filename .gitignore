@@ -10,3 +10,6 @@ testing_inputs/non-incremental
 
 dafny_testing/cache*
 dafny_testing/perf
+
+**/*cache*
+**/*perf*

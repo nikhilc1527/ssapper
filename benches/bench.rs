@@ -1,6 +1,12 @@
-use std::process::Command;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    process::Command,
+    sync::mpsc::channel,
+};
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use ssapper::parser;
 use temp_env::with_vars;
 use tempfile::NamedTempFile;
 use tests::run_file;
@@ -55,6 +61,17 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
         })
     });
 
+    c.bench_function("just parse", |b| {
+        b.iter(|| {
+            let (tx, _rx) = channel();
+            let mut inlines: Box<dyn BufRead> = Box::new(BufReader::new(
+                File::open("./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2")
+                    .expect("couldnt open infile"),
+            ));
+            parser(&mut inlines, tx).expect("couldnt parse");
+        })
+    });
+
     c.bench_function("run external z3", |b| {
         b.iter(|| {
             Command::new("z3")
@@ -82,24 +99,6 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
             );
         })
     });
-
-    // let mut group1 = c.benchmark_group("run cache/perf");
-    // for infile in INFILES {
-    //     group1.bench_with_input(
-    //         BenchmarkId::from_parameter(infile),
-    //         infile,
-    //         |bencher, infile| {
-    //             bencher.iter(|| {
-    //                 run_file(
-    //                     infile.to_string(),
-    //                     Some(cache_file_path),
-    //                     Some(tmpfile_path),
-    //                 );
-    //             });
-    //         },
-    //     );
-    // }
-    // group1.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
