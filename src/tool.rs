@@ -77,7 +77,7 @@ fn print_histograms(stats: &Vec<RunEntry>, _run_index: Option<i32>) {
     }
 }
 
-pub fn main() -> Result<(), rusqlite::Error> {
+pub fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {

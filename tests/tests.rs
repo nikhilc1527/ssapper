@@ -279,6 +279,20 @@ pub fn test_perf() {
     assert_eq!(stats[1].cache_misses, 0);
     assert_eq!(stats[2].cache_hits, 1);
     assert_eq!(stats[2].cache_misses, 1);
+
+    let cmd = Command::new(env!("CARGO_BIN_EXE_ssapper-tool"))
+        .arg("stats")
+        .arg("--summary")
+        .arg(perf_file.path().to_str().unwrap())
+        .output()
+        .expect("couldnt get tool output");
+    let perf_contents =
+        from_utf8(cmd.stdout.as_slice()).expect("couldnt construct utf8 out of tool output");
+
+    assert_eq!(
+        perf_contents,
+        "( 1) -   0/  1 -   0.00%\n( 2) -   1/  0 - 100.00%\n( 3) -   1/  1 -  50.00%\n"
+    );
 }
 
 #[test]

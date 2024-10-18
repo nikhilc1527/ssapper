@@ -1,7 +1,10 @@
 use std::{fmt::Display, time::Duration};
 
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+
+type Result<T> = anyhow::Result<T>;
 
 #[derive(Debug)]
 pub struct RunEntry {
@@ -10,24 +13,6 @@ pub struct RunEntry {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub queries: Vec<QueryEntry>,
-}
-
-impl RunEntry {
-    fn new(
-        id: usize,
-        run_time: i64,
-        cache_hits: usize,
-        cache_misses: usize,
-        queries: Vec<QueryEntry>,
-    ) -> Self {
-        RunEntry {
-            id,
-            run_time: DateTime::from_timestamp_micros(run_time).expect("couldnt parse run time"),
-            cache_hits,
-            cache_misses,
-            queries,
-        }
-    }
 }
 
 impl Display for RunEntry {
@@ -52,45 +37,37 @@ pub struct QueryEntry {
     pub time_taken: Duration,
 }
 
-impl QueryEntry {
-    fn new(id: usize, run_id: usize, query: String, response: String, time_taken: u64) -> Self {
-        QueryEntry {
-            id,
-            run_id,
-            query,
-            response,
-            time_taken: Duration::from_nanos(time_taken),
-        }
-    }
-}
-
-pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>, rusqlite::Error> {
+pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>> {
     let conn = Connection::open(stats_file).expect("couldnt open connection to database");
     let mut stmt = conn.prepare("SELECT * FROM runs")?;
 
-    let runs_iter = stmt.query_map([], |row| {
-        Ok(RunEntry::new(
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            vec![],
-        ))
+    let runs_iter = stmt.query_and_then([], |row| -> Result<RunEntry> {
+        let re = RunEntry {
+            id: row.get(0)?,
+            run_time: DateTime::from_timestamp_micros(row.get(1)?)
+                .ok_or(anyhow!("couldnt construct timestamp"))?,
+            cache_hits: row.get(2)?,
+            cache_misses: row.get(3)?,
+            queries: vec![],
+        };
+        Ok(re)
     })?;
 
     let mut runs = Vec::new();
     for run in runs_iter {
         let mut run = run?;
         let mut stmt = conn.prepare("SELECT * FROM queries WHERE run_id = ?1")?;
-        let query_iter = stmt.query_map(params![run.id], |r| {
-            Ok(QueryEntry::new(
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-            ))
+
+        let query_iter = stmt.query_and_then(params![run.id], |row| -> Result<QueryEntry> {
+            Ok(QueryEntry {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                query: row.get(2)?,
+                response: row.get(3)?,
+                time_taken: Duration::from_nanos(row.get(4)?),
+            })
         })?;
+
         run.queries = query_iter.map(|f| f.unwrap()).collect::<Vec<QueryEntry>>();
         runs.push(run);
     }

@@ -17,16 +17,13 @@ inherits = "release"
 [[bin]]
 name = "ssapper"
 path = "src/main.rs"
-test = false
 
 [[bin]]
 name = "ssapper-tool"
 path = "src/tool.rs"
-test = false
 
 [lib]
 path = "lib/ssapper.rs"
-test = false
 doctest = false
 
 [[bench]]
@@ -51,6 +48,7 @@ sha256 = "1.5.0"
 chrono = "0.4.38"
 termplot = "0.1.1"
 anyhow = "1.0.89"
+rayon = "1.10.0"
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }

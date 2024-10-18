@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::ensure;
 use chrono::Local;
 use smtlib::sexp::parse;
 
@@ -34,6 +35,7 @@ impl HashedSexp {
     fn gives_response(&self) -> bool {
         matches!(&self.sexp, smtlib::sexp::Sexp::List(v) if {
             !v.is_empty() && matches!(&v[0], smtlib::sexp::Sexp::Atom(smtlib::sexp::Atom::S(x)) if {
+                // TODO: figure out if there are more that I have to handle
                 x == "check-sat" || x.starts_with("get-")
             })
         })
@@ -42,6 +44,7 @@ impl HashedSexp {
 
 type Result<T> = anyhow::Result<T>;
 
+// open database with WAL mode
 pub fn open_db<P: AsRef<Path>>(path: P, flags: OpenFlags) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, flags)?;
 
@@ -50,6 +53,7 @@ pub fn open_db<P: AsRef<Path>>(path: P, flags: OpenFlags) -> Result<Connection> 
     Ok(conn)
 }
 
+// create schemas in cache db
 pub fn init_cache(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS computations (
@@ -67,17 +71,12 @@ pub fn init_cache(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// current state of the parser
+// current state of the parser
 struct ParserState {
     linenum: usize,
     running: String,
     par_balance: usize,
     line_has_stuff: bool,
-}
-
-#[derive(Debug)]
-pub struct SendCommand {
-    sexp: HashedSexp,
 }
 
 /// get response from child process, reading until the line that says DONE
@@ -91,13 +90,8 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> Result<(String, i32)> {
         // including the newline)
         let n = child.read_line(&mut buf)?;
 
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "couldnt get from child",
-            )
-            .into());
-        }
+        ensure!(n > 0, "couldnt read from child");
+
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
 
@@ -109,7 +103,7 @@ fn get_response(child: &mut BufReader<ChildStdout>) -> Result<(String, i32)> {
     }
 }
 
-/// type of single query
+// type of single query (smt2 statement)
 #[derive(Debug)]
 pub struct Query {
     pub query: Option<HashedSexp>,
@@ -118,6 +112,7 @@ pub struct Query {
     pub end_time: Option<Instant>,
 }
 
+// one response from one input smt2 command
 #[derive(Debug)]
 pub struct Response {
     pub input: Sexp,
@@ -125,13 +120,14 @@ pub struct Response {
     pub time_taken: Duration,
 }
 
-/// structure holding everything that we want to be keeping track of in terms of performance
+// structure holding everything that we want to be keeping track of in terms of performance
 pub struct PerfLog {
     pub cache_misses: usize,
     pub cache_hits: usize,
     pub queries: Vec<Response>,
 }
 
+// what the merger receives from sender and receiver
 enum Received {
     CacheHit(Sexp, String),
     CacheMiss(HashedSexp, Instant),
@@ -139,7 +135,7 @@ enum Received {
 }
 
 // returns: perflog, to_cache(string to response), to_log (vec of indices into perflog queries)
-fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)>, Vec<usize>) {
+fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)>) {
     let mut queue_cache = VecDeque::new();
     let mut queue_response = VecDeque::new();
     let mut queries = Vec::new();
@@ -147,13 +143,13 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
     let mut cache_misses = 0;
     let mut to_cache = Vec::new();
 
-    let mut to_log = Vec::new();
-
     while let Ok(rec) = rx.recv() {
         match rec {
             Received::Response(a, b) => queue_response.push_back((a, b)),
             Received::CacheMiss(s, i1) => queue_cache.push_back((s, i1)),
             Received::CacheHit(s, r) => {
+                // only process the responses that have output
+                // in order to not cache every single statement
                 if !r.is_empty() {
                     if print {
                         println!("{r}");
@@ -164,7 +160,6 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
                         output: r,
                         time_taken: Duration::ZERO,
                     });
-                    to_log.push(queries.len() - 1);
                 }
             }
         }
@@ -185,7 +180,6 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
                     output: r.to_string(),
                     time_taken: i2 - i1,
                 });
-                to_log.push(queries.len() - 1);
                 to_cache.push((s.hash.to_string(), r.to_string()));
             }
         }
@@ -198,7 +192,6 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
             queries,
         },
         to_cache,
-        to_log,
     )
 }
 
@@ -219,7 +212,7 @@ pub fn parse_and_send_async(
     let mut childout = proc.stdout;
     let mut child = proc.child;
 
-    let ((log, to_cache, to_log), conn) = scope(|s| {
+    let ((log, to_cache), conn) = scope(|s| {
         let ta = mergetx.clone();
         let tb = mergetx.clone();
 
@@ -259,7 +252,7 @@ pub fn parse_and_send_async(
         tx.commit()?;
     }
     if let Some(log_file) = log_file {
-        log_results(&log, &to_log, log_file)?;
+        log_results(&log, log_file)?;
     }
 
     Ok(log)
@@ -280,7 +273,7 @@ fn receiver(childout: &mut BufReader<ChildStdout>, tx: Sender<Received>) -> Resu
 
 /// sends queries to solver subprocess
 fn sender(
-    rx: Receiver<SendCommand>,
+    rx: Receiver<HashedSexp>,
     mut childin: &ChildStdin,
     conn_path: Option<&str>,
     tx: Sender<Received>,
@@ -303,32 +296,32 @@ fn sender(
 
     while let Ok(sc) = rx.recv() {
         if let Some(query_stmt) = query_stmt.as_mut() {
-            if !sc.sexp.gives_response() {
+            if !sc.gives_response() {
                 backlog.push(sc.sexp);
                 continue;
             }
             let cached_result: Option<String> = query_stmt
-                .query_row(params![&sc.sexp.hash.to_string()], |row| row.get(0))
+                .query_row(params![&sc.hash.to_string()], |row| row.get(0))
                 .ok();
             if let Some(resp) = cached_result {
-                tx.send(Received::CacheHit(sc.sexp.sexp.clone(), resp.to_string()))?;
+                tx.send(Received::CacheHit(sc.sexp.clone(), resp.to_string()))?;
                 backlog.push(sc.sexp);
             } else {
                 for b in backlog.into_iter() {
-                    writeln!(childin, "{}", b.sexp)?;
+                    writeln!(childin, "{}", b)?;
                     writeln!(childin, r#"(echo "DONE0")"#,)?;
                 }
-                writeln!(childin, "{}", sc.sexp.sexp)?;
+                writeln!(childin, "{}", sc.sexp)?;
                 writeln!(childin, r#"(echo "DONE1")"#,)?;
 
-                tx.send(Received::CacheMiss(sc.sexp, Instant::now()))?;
+                tx.send(Received::CacheMiss(sc, Instant::now()))?;
 
                 backlog = Vec::new();
             };
         } else {
-            writeln!(childin, "{}", sc.sexp.sexp)?;
+            writeln!(childin, "{}", sc.sexp)?;
             writeln!(childin, r#"(echo "DONE1")"#)?;
-            tx.send(Received::CacheMiss(sc.sexp, Instant::now()))?;
+            tx.send(Received::CacheMiss(sc, Instant::now()))?;
         }
     }
 
@@ -338,7 +331,8 @@ fn sender(
     Ok(())
 }
 
-pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()> {
+// parses the entirety of the input stream
+pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<HashedSexp>) -> Result<()> {
     let mut parser = ParserState {
         linenum: 0,
         running: "".to_string(),
@@ -353,7 +347,7 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
         let next_sexp = next_sexp(inlines, &mut parser, &mut rolling_hash)?;
 
         match next_sexp {
-            Some(next) => tx.send(SendCommand { sexp: next })?,
+            Some(next) => tx.send(next)?,
             None => break,
         }
     }
@@ -361,12 +355,12 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
     Ok(())
 }
 
+// reads, parses, and returns the next sexp in the input stream, or None or eof
 fn next_sexp(
     inlines: &mut Box<dyn BufRead>,
     parser: &mut ParserState,
     rolling_hash: &mut DefaultHasher,
 ) -> Result<Option<HashedSexp>> {
-    // returning None indicates eof
     loop {
         let mut line = String::new();
         if inlines.read_line(&mut line)? == 0 {
@@ -416,6 +410,7 @@ fn next_sexp(
     Ok(None)
 }
 
+// sets up schema for perf db file
 pub fn init_perf(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS runs (
@@ -442,7 +437,8 @@ pub fn init_perf(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn log_results<T: AsRef<Path>>(log: &PerfLog, to_log: &[usize], file_path: T) -> Result<()> {
+// log results to perf db file, to be later read by ssapper-tool
+pub fn log_results<T: AsRef<Path>>(log: &PerfLog, file_path: T) -> Result<()> {
     let mut conn = open_db(file_path, OpenFlags::default())?;
     init_perf(&conn)?;
 
@@ -460,8 +456,7 @@ pub fn log_results<T: AsRef<Path>>(log: &PerfLog, to_log: &[usize], file_path: T
         let mut stmt = trans.prepare_cached(
             "INSERT INTO queries (run_id, query, response, time_taken) VALUES (?1, ?2, ?3, ?4)",
         )?;
-        for l in to_log {
-            let query = &log.queries[*l];
+        for query in &log.queries {
             stmt.execute(params![
                 run_id,
                 format!("{}", query.input),
