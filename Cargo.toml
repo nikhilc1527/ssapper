@@ -9,8 +9,7 @@ edition.workspace = true
 default-run = "ssapper"
 
 [profile.release]
-strip = true
-panic = "abort"
+debug = true
 
 [profile.test]
 inherits = "release"

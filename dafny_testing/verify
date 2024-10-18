@@ -22,7 +22,7 @@ set -e
 cargo build --release
 
 # alias dafny="./dafny /compile:0 /randomSeed:1234"
-alias dafny="run_dafny"
+alias dafny="./run_dafny.sh"
 
 ### Definition Files 
 echo ""

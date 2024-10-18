@@ -22,8 +22,9 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
     let cache_file_path = cache_file.path().to_str().unwrap();
     let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
-    let path = tmpf.keep().expect("couldnt keep");
-    let tmpfile_path = path.1.to_str().expect("couldnt make string");
+    // let path = tmpf.keep().expect("couldnt keep");
+    // let tmpfile_path = path.1.to_str().expect("couldnt make string");
+    let tmpfile_path = tmpf.path().to_str().unwrap();
 
     c.throughput(criterion::Throughput::Bytes(
         include_bytes!("../testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2").len() as u64,
@@ -43,6 +44,19 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
 
     c.bench_function("run file without perf", |b| {
         b.iter(|| {
+            run_file(
+                "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
+                Some(cache_file_path),
+                None,
+            );
+        })
+    });
+
+    c.bench_function("warm up the cache", |b| {
+        b.iter(|| {
+            let cache_file = NamedTempFile::new().expect("couldnt open temp file");
+            let cache_file_path = cache_file.path().to_str().unwrap();
+
             run_file(
                 "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
                 Some(cache_file_path),

@@ -15,8 +15,8 @@ method Maximum(values: seq<int>) returns (max: int)
 }
 
 lemma MaximumIsUnique(values: seq<int>, m1: int, m2: int)
-  requires m1 in values && forall i | 0 <= i < |values| :: values[i] <= m1
   requires m2 in values && forall i | 0 <= i < |values| :: values[i] <= m2
+  requires m1 in values && forall i | 0 <= i < |values| :: values[i] <= m1
   ensures m1 == m2 {
     // This lemma does not need a body: Dafny is able to prove it correct entirely automatically.
 }

@@ -1,9 +1,10 @@
 pub mod logging;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
+    fs::OpenOptions,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
     process::{ChildStdin, ChildStdout},
     sync::{
@@ -34,15 +35,12 @@ pub struct HashedSexp {
 pub static Z3_CHECKSUM: OnceLock<String> = OnceLock::new();
 
 impl HashedSexp {
-    fn new(prev_hash: u64, sexp: Sexp) -> Self {
-        let checksum = Z3_CHECKSUM.get();
-
-        let mut hasher = DefaultHasher::new();
-        prev_hash.hash(&mut hasher);
-        sexp.hash(&mut hasher);
-        checksum.hash(&mut hasher);
-        let hash = hasher.finish();
-        Self { hash, sexp }
+    fn gives_response(&self) -> bool {
+        matches!(&self.sexp, smtlib::sexp::Sexp::List(v) if {
+            !v.is_empty() && matches!(&v[0], smtlib::sexp::Sexp::Atom(smtlib::sexp::Atom::S(x)) if {
+                x == "check-sat" || x.starts_with("get-")
+            })
+        })
     }
 }
 
@@ -171,6 +169,7 @@ pub struct Query {
     pub end_time: Option<Instant>,
 }
 
+#[derive(Debug)]
 pub struct Response {
     pub input: Sexp,
     pub output: String,
@@ -211,33 +210,35 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
                         println!("{r}");
                     }
                     cache_hits += 1;
+                    queries.push(Response {
+                        input: s,
+                        output: r,
+                        time_taken: Duration::ZERO,
+                    });
                     to_log.push(queries.len() - 1);
                 }
-                queries.push(Response {
-                    input: s,
-                    output: r,
-                    time_taken: Duration::ZERO,
-                });
             }
         }
         if !queue_cache.is_empty() && !queue_response.is_empty() {
             let (s, i1) = queue_cache.pop_front().unwrap();
             let (r, i2) = queue_response.pop_front().unwrap();
+            if !s.gives_response() && !r.is_empty() {
+                panic!("found new gives response: {s:?}");
+            }
 
             if !r.is_empty() {
                 if print {
                     println!("{r}");
                 }
                 cache_misses += 1;
+                queries.push(Response {
+                    input: s.sexp,
+                    output: r.to_string(),
+                    time_taken: i2 - i1,
+                });
                 to_log.push(queries.len() - 1);
+                to_cache.push((s.hash.to_string(), r.to_string()));
             }
-            queries.push(Response {
-                input: s.sexp,
-                output: r.to_string(),
-                time_taken: i2 - i1,
-            });
-
-            to_cache.push((s.hash.to_string(), r));
         }
     }
 
@@ -356,6 +357,10 @@ fn sender(
 
     while let Ok(sc) = rx.recv() {
         if let Some(query_stmt) = query_stmt.as_mut() {
+            if !sc.sexp.gives_response() {
+                backlog.push(sc.sexp);
+                continue;
+            }
             let cached_result: Option<String> = query_stmt
                 .query_row(params![&sc.sexp.hash.to_string()], |row| row.get(0))
                 .ok();
@@ -398,10 +403,11 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
         line_has_stuff: false,
     };
 
-    let mut last_hash = 0;
+    let mut rolling_hash = DefaultHasher::new();
+    Z3_CHECKSUM.get().hash(&mut rolling_hash);
 
     loop {
-        let next_sexp = next_sexp(inlines, &mut parser, last_hash);
+        let next_sexp = next_sexp(inlines, &mut parser, &mut rolling_hash);
 
         let next_sexp: HashedSexp = match next_sexp {
             Ok(n) => n,
@@ -415,7 +421,6 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
             Err(other) => return Err(other),
         };
 
-        last_hash = next_sexp.hash;
         tx.send(SendCommand { sexp: next_sexp })
             .expect("couldnt send");
     }
@@ -426,7 +431,7 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
 fn next_sexp(
     inlines: &mut Box<dyn BufRead>,
     parser: &mut ParserState,
-    last_hash: u64,
+    rolling_hash: &mut DefaultHasher,
 ) -> Result<HashedSexp> {
     loop {
         let mut line = String::new();
@@ -468,7 +473,11 @@ fn next_sexp(
                     }
                 };
 
-                let hashed = HashedSexp::new(last_hash, sexp);
+                sexp.hash(rolling_hash);
+                let hashed = HashedSexp {
+                    hash: rolling_hash.finish(),
+                    sexp,
+                };
                 parser.running = parser.running[ind + 1..].to_string();
                 return Ok(hashed);
             }
