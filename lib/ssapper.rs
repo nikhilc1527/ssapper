@@ -1,10 +1,9 @@
 pub mod logging;
 
 use std::{
-    collections::{HashSet, VecDeque},
-    fs::OpenOptions,
+    collections::VecDeque,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, Write},
     path::Path,
     process::{ChildStdin, ChildStdout},
     sync::{
@@ -18,15 +17,12 @@ use std::{
 use chrono::Local;
 use smtlib::sexp::parse;
 
-use rusqlite::{params, Connection, Error as RusqliteError, OpenFlags};
-use thiserror::Error;
+use rusqlite::{params, Connection, OpenFlags};
 
 use smtlib::{proc::SmtProc, sexp::Sexp};
 
-use serde::{Deserialize, Serialize};
-
 /// sexp that depends on the hash of the current sexp as well as of all previous queries
-#[derive(Debug, Serialize, Deserialize, Hash, Eq, PartialEq, Clone)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct HashedSexp {
     hash: u64,
     sexp: Sexp,
@@ -44,49 +40,9 @@ impl HashedSexp {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+type Result<T> = anyhow::Result<T>;
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("rusqlite database error")]
-    Rusqlite(#[from] RusqliteError),
-
-    #[error("solver error")]
-    Solver(#[from] smtlib::proc::SolverError),
-
-    #[error("Parser error")]
-    Parser(#[from] peg::error::ParseError<peg::str::LineCol>),
-
-    #[error("other error")]
-    Other(String),
-}
-
-impl PartialEq for Error {
-    fn eq(&self, other: &Self) -> bool {
-        if let Error::Rusqlite(r1) = self {
-            if let Error::Rusqlite(r2) = other {
-                r1 == r2
-            } else {
-                false
-            }
-        } else if let Error::Parser(p1) = self {
-            if let Error::Parser(p2) = other {
-                p1 == p2
-            } else {
-                false
-            }
-        } else if let Error::Solver(_) = self {
-            false
-        } else {
-            unreachable!()
-        }
-    }
-}
-
-pub fn open_db<P: AsRef<Path>>(
-    path: P,
-    flags: OpenFlags,
-) -> std::result::Result<Connection, rusqlite::Error> {
+pub fn open_db<P: AsRef<Path>>(path: P, flags: OpenFlags) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, flags)?;
 
     conn.execute_batch("PRAGMA journal_mode = WAL")?;
@@ -94,7 +50,7 @@ pub fn open_db<P: AsRef<Path>>(
     Ok(conn)
 }
 
-pub fn init_cache(conn: &Connection) -> std::result::Result<(), rusqlite::Error> {
+pub fn init_cache(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS computations (
                  hash TEXT PRIMARY KEY,
@@ -125,9 +81,7 @@ pub struct SendCommand {
 }
 
 /// get response from child process, reading until the line that says DONE
-fn get_response(
-    child: &mut BufReader<ChildStdout>,
-) -> std::result::Result<(String, i32), std::io::Error> {
+fn get_response(child: &mut BufReader<ChildStdout>) -> Result<(String, i32)> {
     // buf accumulates the entire response, which is read line-by-line
     // looking for the DONE marker.
     let mut buf = String::new();
@@ -135,25 +89,20 @@ fn get_response(
         let last_end = buf.len();
         // n is the number of bytes read (that is, the length of this line
         // including the newline)
-        let n = child.read_line(&mut buf);
-        let n = match n {
-            Ok(n) => n,
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::BrokenPipe => return Err(err),
-                o => panic!("{o}"),
-            },
-        };
+        let n = child.read_line(&mut buf)?;
+
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "couldnt get from child",
-            ));
+            )
+            .into());
         }
         // last line, without the newline
         let last_line = buf[last_end..last_end + n].trim_end();
 
         if let Some(stripped) = last_line.strip_prefix("DONE") {
-            let a = stripped.parse::<i32>().expect("couldnt get a");
+            let a = stripped.parse::<i32>()?;
             let response = buf[..last_end].trim_end();
             return Ok((response.to_string(), a));
         }
@@ -281,79 +230,76 @@ pub fn parse_and_send_async(
 
         drop(mergetx);
 
-        subio_writer.join().expect("couldnt join the writer");
-        subio_reader.join().expect("couldnt join the reader");
+        subio_writer
+            .join()
+            .expect("couldnt join the writer")
+            .expect("couldnt write");
+        subio_reader
+            .join()
+            .expect("couldnt join the reader")
+            .expect("couldnt read");
 
-        (merged.join().expect("couldnt join merger"), conn)
+        (merged.join().expect("couldnt merge"), conn)
     });
-    child.kill().expect("couldnt kill child");
+    child.kill()?;
 
-    scope(|s| {
-        let a = s.spawn(|| {
-            if let Some(conn) = conn {
-                let mut conn = open_db(conn, OpenFlags::default()).expect("couldnt open conn");
-                init_cache(&conn).expect("couldnt init cache");
+    if let Some(conn) = conn {
+        let mut conn = open_db(conn, OpenFlags::default())?;
+        init_cache(&conn)?;
 
-                let tx = conn.transaction().expect("couldnt start transaction");
-                {
-                    let mut stmt = tx
-                        .prepare_cached(
-                            "INSERT INTO computations (hash, result_value) VALUES (?1, ?2)",
-                        )
-                        .expect("couldnt prepare cached");
+        let tx = conn.transaction()?;
+        {
+            let mut stmt =
+                tx.prepare_cached("INSERT INTO computations (hash, result_value) VALUES (?1, ?2)")?;
 
-                    for (s, r) in to_cache {
-                        stmt.execute(params![s.to_string(), r])
-                            .expect("couldnt update db with new entry");
-                    }
-                }
-                tx.commit().expect("couldnt commit transaction");
+            for (s, r) in to_cache {
+                stmt.execute(params![s.to_string(), r])?;
             }
-        });
-
-        let b = s.spawn(|| {
-            if let Some(log_file) = log_file {
-                log_results(&log, &to_log, log_file).expect("couldnt log results");
-            }
-        });
-
-        b.join().expect("couldnt join b");
-        a.join().expect("couldnt join a");
-    });
+        }
+        tx.commit()?;
+    }
+    if let Some(log_file) = log_file {
+        log_results(&log, &to_log, log_file)?;
+    }
 
     Ok(log)
 }
 
 /// reads responses from solver subprocess
-fn receiver(childout: &mut BufReader<ChildStdout>, tx: Sender<Received>) {
+fn receiver(childout: &mut BufReader<ChildStdout>, tx: Sender<Received>) -> Result<()> {
     while let Ok((r, a)) = get_response(childout) {
         if r == "EXIT" {
             break;
         } else if a == 1 {
-            tx.send(Received::Response(r, Instant::now()))
-                .expect("couldnt send response to tx");
+            tx.send(Received::Response(r, Instant::now()))?;
         }
     }
+
+    Ok(())
 }
 
 /// sends queries to solver subprocess
 fn sender(
     rx: Receiver<SendCommand>,
     mut childin: &ChildStdin,
-    conn: Option<&str>,
+    conn_path: Option<&str>,
     tx: Sender<Received>,
-) {
+) -> Result<()> {
     let mut backlog = Vec::new();
 
-    let conn = conn
-        .as_ref()
-        .map(|c| open_db(c, OpenFlags::default()).expect("couldnt open conn"))
-        .inspect(|c| init_cache(c).expect("couldnt init cache"));
+    let conn = if let Some(conn_path) = conn_path {
+        let db = open_db(conn_path, OpenFlags::default())?;
+        init_cache(&db)?;
+        Some(db)
+    } else {
+        None
+    };
 
-    let mut query_stmt = conn.as_ref().map(|f| {
-        f.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")
-            .expect("couldnt get response from db")
-    });
+    let mut query_stmt = if let Some(conn) = conn.as_ref() {
+        Some(conn.prepare_cached("SELECT result_value FROM computations WHERE hash = ?1")?)
+    } else {
+        None
+    };
 
     while let Ok(sc) = rx.recv() {
         if let Some(query_stmt) = query_stmt.as_mut() {
@@ -365,34 +311,31 @@ fn sender(
                 .query_row(params![&sc.sexp.hash.to_string()], |row| row.get(0))
                 .ok();
             if let Some(resp) = cached_result {
-                tx.send(Received::CacheHit(sc.sexp.sexp.clone(), resp.to_string()))
-                    .expect("couldnt send cache to tx");
+                tx.send(Received::CacheHit(sc.sexp.sexp.clone(), resp.to_string()))?;
                 backlog.push(sc.sexp);
             } else {
                 for b in backlog.into_iter() {
-                    writeln!(childin, "{}", b.sexp).expect("I/O error: failed to send to solver");
-                    writeln!(childin, r#"(echo "DONE0")"#,)
-                        .expect("I/O error: failed to send to solver");
+                    writeln!(childin, "{}", b.sexp)?;
+                    writeln!(childin, r#"(echo "DONE0")"#,)?;
                 }
-                writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
-                writeln!(childin, r#"(echo "DONE1")"#,)
-                    .expect("I/O error: failed to send to solver");
+                writeln!(childin, "{}", sc.sexp.sexp)?;
+                writeln!(childin, r#"(echo "DONE1")"#,)?;
 
-                tx.send(Received::CacheMiss(sc.sexp, Instant::now()))
-                    .expect("couldnt send cache to tx");
+                tx.send(Received::CacheMiss(sc.sexp, Instant::now()))?;
 
                 backlog = Vec::new();
             };
         } else {
-            writeln!(childin, "{}", sc.sexp.sexp).expect("I/O error: failed to send to solver");
-            writeln!(childin, r#"(echo "DONE1")"#).expect("I/O error: failed to send to solver");
-            tx.send(Received::CacheMiss(sc.sexp, Instant::now()))
-                .expect("couldnt send cache to tx");
+            writeln!(childin, "{}", sc.sexp.sexp)?;
+            writeln!(childin, r#"(echo "DONE1")"#)?;
+            tx.send(Received::CacheMiss(sc.sexp, Instant::now()))?;
         }
     }
 
-    writeln!(childin, r#"(echo "EXIT")"#).expect("I/O error: failed to send to solver");
-    writeln!(childin, r#"(echo "DONE0")"#).expect("I/O error: failed to send to solver");
+    writeln!(childin, r#"(echo "EXIT")"#)?;
+    writeln!(childin, r#"(echo "DONE0")"#)?;
+
+    Ok(())
 }
 
 pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result<()> {
@@ -407,22 +350,12 @@ pub fn parser(inlines: &mut Box<dyn BufRead>, tx: Sender<SendCommand>) -> Result
     Z3_CHECKSUM.get().hash(&mut rolling_hash);
 
     loop {
-        let next_sexp = next_sexp(inlines, &mut parser, &mut rolling_hash);
+        let next_sexp = next_sexp(inlines, &mut parser, &mut rolling_hash)?;
 
-        let next_sexp: HashedSexp = match next_sexp {
-            Ok(n) => n,
-            Err(Error::Other(x)) => {
-                if x == "eof" {
-                    break;
-                } else {
-                    return Err(Error::Other(x));
-                }
-            }
-            Err(other) => return Err(other),
-        };
-
-        tx.send(SendCommand { sexp: next_sexp })
-            .expect("couldnt send");
+        match next_sexp {
+            Some(next) => tx.send(SendCommand { sexp: next })?,
+            None => break,
+        }
     }
 
     Ok(())
@@ -432,14 +365,11 @@ fn next_sexp(
     inlines: &mut Box<dyn BufRead>,
     parser: &mut ParserState,
     rolling_hash: &mut DefaultHasher,
-) -> Result<HashedSexp> {
+) -> Result<Option<HashedSexp>> {
+    // returning None indicates eof
     loop {
         let mut line = String::new();
-        if inlines
-            .read_line(&mut line)
-            .expect("couldnt read from input")
-            == 0
-        {
+        if inlines.read_line(&mut line)? == 0 {
             break;
         }
         parser.linenum += 1;
@@ -469,7 +399,7 @@ fn next_sexp(
                     Ok(x) => x,
                     Err(mut not_ok) => {
                         not_ok.location.line = parser.linenum;
-                        return Err(Error::Parser(not_ok));
+                        return Err(Into::into(not_ok));
                     }
                 };
 
@@ -479,14 +409,14 @@ fn next_sexp(
                     sexp,
                 };
                 parser.running = parser.running[ind + 1..].to_string();
-                return Ok(hashed);
+                return Ok(Some(hashed));
             }
         }
     }
-    Err(Error::Other("eof".to_string()))
+    Ok(None)
 }
 
-pub fn init_perf(conn: &Connection) -> std::result::Result<(), RusqliteError> {
+pub fn init_perf(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

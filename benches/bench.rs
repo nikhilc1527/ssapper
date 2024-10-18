@@ -14,20 +14,20 @@ use tests::run_file;
 #[path = "../tests/shared.rs"]
 mod tests;
 
+const INFILENAME: &str = "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2";
+
 pub fn criterion_benchmark(crit: &mut Criterion) {
     let mut c = crit.benchmark_group("ssapper_profile");
 
-    c.sample_size(20);
+    c.sample_size(100);
 
     let cache_file = NamedTempFile::new().expect("couldnt open temp file");
     let cache_file_path = cache_file.path().to_str().unwrap();
     let tmpf = NamedTempFile::new().expect("couldnt make tmp file");
-    // let path = tmpf.keep().expect("couldnt keep");
-    // let tmpfile_path = path.1.to_str().expect("couldnt make string");
     let tmpfile_path = tmpf.path().to_str().unwrap();
 
     c.throughput(criterion::Throughput::Bytes(
-        include_bytes!("../testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2").len() as u64,
+        File::open(INFILENAME).unwrap().metadata().unwrap().len(),
     ));
 
     c.sampling_mode(criterion::SamplingMode::Flat);
@@ -35,7 +35,7 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
     c.bench_function("run file with perf", |b| {
         b.iter(|| {
             run_file(
-                "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
+                INFILENAME.to_string(),
                 Some(cache_file_path),
                 Some(tmpfile_path),
             );
@@ -44,34 +44,22 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
 
     c.bench_function("run file without perf", |b| {
         b.iter(|| {
-            run_file(
-                "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
-                Some(cache_file_path),
-                None,
-            );
+            run_file(INFILENAME.to_string(), Some(cache_file_path), None);
         })
     });
 
-    c.bench_function("warm up the cache", |b| {
+    c.bench_function("generate the cache", |b| {
         b.iter(|| {
             let cache_file = NamedTempFile::new().expect("couldnt open temp file");
             let cache_file_path = cache_file.path().to_str().unwrap();
 
-            run_file(
-                "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
-                Some(cache_file_path),
-                None,
-            );
+            run_file(INFILENAME.to_string(), Some(cache_file_path), None);
         })
     });
 
     c.bench_function("run file without cache", |b| {
         b.iter(|| {
-            run_file(
-                "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2".to_string(),
-                None,
-                None,
-            );
+            run_file(INFILENAME.to_string(), None, None);
         })
     });
 
@@ -79,8 +67,7 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
         b.iter(|| {
             let (tx, _rx) = channel();
             let mut inlines: Box<dyn BufRead> = Box::new(BufReader::new(
-                File::open("./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2")
-                    .expect("couldnt open infile"),
+                File::open(INFILENAME).expect("couldnt open infile"),
             ));
             parser(&mut inlines, tx).expect("couldnt parse");
         })
@@ -89,7 +76,7 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
     c.bench_function("run external z3", |b| {
         b.iter(|| {
             Command::new("z3")
-                .arg("./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2")
+                .arg(INFILENAME)
                 .output()
                 .expect("failed to run the actual z3")
                 .stdout
@@ -105,7 +92,7 @@ pub fn criterion_benchmark(crit: &mut Criterion) {
                 ],
                 || {
                     Command::new(env!("CARGO_BIN_EXE_ssapper"))
-                        .arg("./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2")
+                        .arg(INFILENAME)
                         .output()
                         .expect("failed to run the actual z3")
                         .stdout
