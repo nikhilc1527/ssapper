@@ -3,6 +3,7 @@
 use io::BufReader;
 use logging::get_stats;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use rusqlite::OpenFlags;
 use smtlib::conf::SolverCmd;
@@ -84,6 +85,7 @@ fn test_file(infile: String, conn: Option<&str>, logfile: Option<&str>) -> PerfL
 const INFILES: &[&str] = &[
     "./testing_inputs/small.smt2",
     "./testing_inputs/small2.smt2",
+    "./testing_inputs/stainless_benchmarks/cvc4-NA-67.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1251.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-730.smt2",
     "./testing_inputs/stainless_benchmarks/cvc4-NA-1070.smt2",
@@ -307,27 +309,37 @@ pub fn test_integration_full_stainless() {
         .collect();
 
     let s1 = Instant::now();
-    paths_vec.iter().enumerate().for_each(|(i, infile)| {
-        test_file(
-            infile.to_string(),
-            Some(cache_file.path().to_str().unwrap()),
-            None,
-        );
-        if i % 100 == 0 {
-            println!("{i}: {:?}", s1.elapsed());
-        }
-    });
+    paths_vec
+        .iter()
+        .enumerate()
+        .collect::<Vec<(usize, &String)>>()
+        .par_iter()
+        .for_each(|(i, infile)| {
+            if i % 100 == 0 {
+                println!("{i}: {:?}", s1.elapsed());
+            }
+            test_file(
+                infile.to_string(),
+                Some(cache_file.path().to_str().unwrap()),
+                None,
+            );
+        });
     let s2 = Instant::now();
-    paths_vec.iter().enumerate().for_each(|(i, infile)| {
-        test_file(
-            infile.to_string(),
-            Some(cache_file.path().to_str().unwrap()),
-            None,
-        );
-        if i % 100 == 0 {
-            println!("{i}: {:?}", s1.elapsed());
-        }
-    });
+    paths_vec
+        .iter()
+        .enumerate()
+        .collect::<Vec<(usize, &String)>>()
+        .par_iter()
+        .for_each(|(i, infile)| {
+            test_file(
+                infile.to_string(),
+                Some(cache_file.path().to_str().unwrap()),
+                None,
+            );
+            if i % 100 == 0 {
+                println!("{i}: {:?}", s1.elapsed());
+            }
+        });
     let s3 = Instant::now();
 
     println!("before caching: {:?}", s2 - s1);

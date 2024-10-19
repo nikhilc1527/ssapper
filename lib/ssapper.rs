@@ -166,9 +166,9 @@ fn merger(rx: Receiver<Received>, print: bool) -> (PerfLog, Vec<(String, String)
         if !queue_cache.is_empty() && !queue_response.is_empty() {
             let (s, i1) = queue_cache.pop_front().unwrap();
             let (r, i2) = queue_response.pop_front().unwrap();
-            if !s.gives_response() && !r.is_empty() {
-                panic!("found new gives response: {s:?}");
-            }
+            // if !s.gives_response() && !r.is_empty() {
+            //     panic!("found new gives response: {s:?}");
+            // }
 
             if !r.is_empty() {
                 if print {
@@ -260,11 +260,19 @@ pub fn parse_and_send_async(
 
 /// reads responses from solver subprocess
 fn receiver(childout: &mut BufReader<ChildStdout>, tx: Sender<Received>) -> Result<()> {
+    let mut running = String::new();
     while let Ok((r, a)) = get_response(childout) {
         if r == "EXIT" {
             break;
         } else if a == 1 {
-            tx.send(Received::Response(r, Instant::now()))?;
+            tx.send(Received::Response(running + &r, Instant::now()))?;
+            running = String::new();
+        } else {
+            for line in r.lines() {
+                if line.starts_with("(error") {
+                    running += line;
+                }
+            }
         }
     }
 

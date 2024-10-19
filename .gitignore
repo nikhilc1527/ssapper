@@ -10,6 +10,8 @@ testing_inputs/non-incremental
 
 dafny_testing/cache*
 dafny_testing/perf
+# symlink to dafny binary with correct version
+dafny_testing/dafny
 
 **/*cache*
 **/*perf*

@@ -41,7 +41,7 @@ pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>> {
     let conn = Connection::open(stats_file).expect("couldnt open connection to database");
     let mut stmt = conn.prepare("SELECT * FROM runs")?;
 
-    let runs_iter = stmt.query_and_then([], |row| -> Result<RunEntry> {
+    let runs_iter = stmt.query_and_then([], |row| {
         let re = RunEntry {
             id: row.get(0)?,
             run_time: DateTime::from_timestamp_micros(row.get(1)?)
@@ -50,7 +50,7 @@ pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>> {
             cache_misses: row.get(3)?,
             queries: vec![],
         };
-        Ok(re)
+        anyhow::Ok(re)
     })?;
 
     let mut runs = Vec::new();
@@ -58,8 +58,8 @@ pub fn get_stats(stats_file: &str) -> Result<Vec<RunEntry>> {
         let mut run = run?;
         let mut stmt = conn.prepare("SELECT * FROM queries WHERE run_id = ?1")?;
 
-        let query_iter = stmt.query_and_then(params![run.id], |row| -> Result<QueryEntry> {
-            Ok(QueryEntry {
+        let query_iter = stmt.query_and_then(params![run.id], |row| {
+            anyhow::Ok(QueryEntry {
                 id: row.get(0)?,
                 run_id: row.get(1)?,
                 query: row.get(2)?,

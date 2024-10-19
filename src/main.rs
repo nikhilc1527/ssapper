@@ -1,7 +1,8 @@
 use std::{
     env,
-    fs::File,
-    io::{stdin, BufRead, BufReader},
+    fs::{File, OpenOptions},
+    io::{stdin, BufRead, BufReader, Write},
+    process::Command,
 };
 
 use anyhow::{anyhow, ensure};
@@ -44,6 +45,12 @@ fn main() -> anyhow::Result<()> {
     Z3_CHECKSUM.set(digest(&z3_path)).map_err(|e| anyhow!(e))?;
 
     ensure!(!opts.is_empty(), "need at least one option");
+    if opts.iter().any(|x| x == "-version") {
+        // TODO: figure out what other options need to handle special case
+        let mut cmd = Command::new(&z3_path).arg("-version").spawn()?;
+        cmd.wait()?;
+        return Ok(());
+    };
 
     let (inlines, cmd): (Box<dyn BufRead>, SolverCmd) = {
         match opts.iter().position(|x| x == "-in") {
