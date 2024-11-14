@@ -1,0 +1,12 @@
+[package]
+name = "pccache"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.93"
+fs4 = "0.11.1"
+memmap = "0.7.0"
+serde = "1.0.215"
+serde_json = "1.0.132"
+tempfile = "3.14.0"

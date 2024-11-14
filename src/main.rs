@@ -1,7 +1,7 @@
 use std::{
     env,
-    fs::{File, OpenOptions},
-    io::{stdin, BufRead, BufReader, Write},
+    fs::File,
+    io::{stdin, BufRead, BufReader},
     process::Command,
 };
 
@@ -32,14 +32,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut opts = cli.opts;
 
-    let z3_path: String = match env::var("SSAPPER_SOLVER_PATH") {
+    // let z3_path: String =
+    //     env::var("SSAPPER_SOLVER_PATH").unwrap_or(which("z3")?.to_str().unwrap().to_string());
+    let z3_path = match env::var("SSAPPER_SOLVER_PATH") {
         Ok(path) => path,
-        _ => {
-            let p = which("z3")?;
-            p.to_str()
-                .ok_or(anyhow!("couldnt construct z3 path"))?
-                .to_string()
-        }
+        Err(_) => which("z3")?.to_str().unwrap().to_string(),
     };
 
     Z3_CHECKSUM.set(digest(&z3_path)).map_err(|e| anyhow!(e))?;

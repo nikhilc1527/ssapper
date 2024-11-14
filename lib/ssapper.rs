@@ -392,6 +392,7 @@ fn next_sexp(
                 parser.running = parser.running[..ind].to_string();
                 break;
             }
+
             if parser.line_has_stuff && parser.par_balance == 0 {
                 parser.line_has_stuff = false;
                 let cur = &parser.running[..=ind];
