@@ -1,21 +1,29 @@
-use pccache::{get, insert, set_config, Config};
+use pccache::Cache;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 fn main() -> anyhow::Result<()> {
-    set_config(Config::new("cache.db".into(), None))?;
-    // insert(4, 8)?;
-    // insert(5, 10)?;
-    // insert(6, 12)?;
-    insert(1, 20)?;
-    // insert(1, 2)?;
-    // insert(2, 4)?;
-    // insert(3, 6)?;
+    let mut cache = Cache::new("cache.db");
+    // cache.insert(4, 8)?;
+    // cache.insert(5, 10)?;
+    // cache.insert(6, 12)?;
+    // cache.insert(1, 20)?;
+    // cache.insert(1, 2)?;
+    // cache.insert(2, 4)?;
+    // cache.insert(3, 6)?;
 
-    println!("{:?}", get::<i32, i32>(1)?);
-    println!("{:?}", get::<i32, i32>(2)?);
-    println!("{:?}", get::<i32, i32>(3)?);
-    println!("{:?}", get::<i32, i32>(4)?);
-    println!("{:?}", get::<i32, i32>(5)?);
-    println!("{:?}", get::<i32, i32>(6)?);
+    // println!("{:?}", cache.get(1)?);
+    // println!("{:?}", cache.get(2)?);
+    // println!("{:?}", cache.get(3)?);
+    // println!("{:?}", cache.get(4)?);
+    // println!("{:?}", cache.get(5)?);
+    // println!("{:?}", cache.get(6)?);
+
+    (0..3).into_par_iter().for_each(|n| {
+        cache.clone().insert(n, n * 5).expect("failed");
+    });
+
+    let c = cache.collect();
+    println!("{c:?}");
 
     Ok(())
 }
