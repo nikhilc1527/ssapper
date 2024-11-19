@@ -3,15 +3,15 @@ mod tests;
 use std::{
     collections::BTreeMap,
     fmt::Debug,
-    fs::{canonicalize, read_dir, remove_file, File, OpenOptions},
+    fs::{self, canonicalize, read_dir, remove_file, rename, File, OpenOptions},
     hash::{DefaultHasher, Hash, Hasher},
-    io::{Seek, Write},
+    io::{BufWriter, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{anyhow, ensure};
+use anyhow::ensure;
 use fs4::fs_std::FileExt;
 use memmap::Mmap;
 use serde::{de::DeserializeOwned, Serialize};
@@ -19,7 +19,7 @@ use tempfile::NamedTempFile;
 
 type Result<R> = anyhow::Result<R>;
 
-fn write_u64(f: &mut File, n: u64) -> Result<()> {
+fn write_u64(f: &mut BufWriter<File>, n: u64) -> Result<()> {
     let buf = n.to_le_bytes();
     ensure!(f.write(&buf)? == 8);
     Ok(())
@@ -40,14 +40,14 @@ next sum(len) bytes: data
  */
 #[derive(Debug)]
 pub struct Index {
-    hash: u64,
-    offset: usize,
-    len: usize,
-    timestamp: u64,
+    pub hash: u64,
+    pub offset: usize,
+    pub len: usize,
+    pub timestamp: u64,
 }
 
 impl Index {
-    fn write_to_file(&self, f: &mut File) -> Result<()> {
+    fn write_to_file(&self, f: &mut BufWriter<File>) -> Result<()> {
         write_u64(f, self.hash)?;
         write_u64(f, self.offset as u64)?;
         write_u64(f, self.len as u64)?;
@@ -96,6 +96,10 @@ fn find_in_file(file: &mut File, hash: u64) -> Result<Option<String>> {
     let map = unsafe { Mmap::map(file)? };
     let n = read_u64(&map)? as usize;
 
+    if n == 0 {
+        return Ok(None);
+    }
+
     // binary search for hash
     let mut lo: usize = 0;
     let mut hi: usize = n - 1;
@@ -141,7 +145,7 @@ fn find_in_file(file: &mut File, hash: u64) -> Result<Option<String>> {
     Ok(Some(s))
 }
 
-fn write_to_file<V: Serialize>(f: &mut File, inds: &BTreeMap<Index, V>) -> Result<()> {
+fn write_to_file<V: Serialize>(f: &mut BufWriter<File>, inds: &BTreeMap<Index, V>) -> Result<()> {
     write_u64(f, inds.len() as u64)?;
 
     let mut offset = 8 + inds.len() * 32;
@@ -169,6 +173,9 @@ fn write_to_file<V: Serialize>(f: &mut File, inds: &BTreeMap<Index, V>) -> Resul
 fn read_from_file<V: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<BTreeMap<Index, V>> {
     let mut cache: BTreeMap<Index, V> = BTreeMap::new();
     let f = File::open(path)?;
+    if f.metadata()?.len() == 0 {
+        return Ok(BTreeMap::new());
+    }
     let map = unsafe { Mmap::map(&f)? };
     let size = u64::from_le_bytes(map[0..8].try_into()?) as usize;
 
@@ -185,36 +192,53 @@ fn read_from_file<V: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<BTreeM
 #[derive(Debug, Clone)]
 pub struct Cache<K, V> {
     path: PathBuf,
+    // tmpdir_path is files that have been written but not merged into main cache
+    tmpdir_path: PathBuf,
+    // tmpdir_path2 is temporary files that are partially written (to make sure that writes are atomic)
+    tmpdir_path2: PathBuf,
+
+    // need these two in order to allow us to have generics
     phantom_key: PhantomData<K>,
     phantom_val: PhantomData<V>,
 }
 
-impl<K: Hash, V: Serialize + DeserializeOwned> Cache<K, V> {
-    pub fn new<P: AsRef<Path>>(path: P) -> Self {
-        let path = path.as_ref().to_path_buf();
-        Self {
+impl<K: Hash + Debug, V: Serialize + DeserializeOwned> Cache<K, V> {
+    // TODO: make this a config struct parameter instead of just path
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = canonicalize(path.as_ref())?;
+        OpenOptions::new().create(true).append(true).open(&path)?;
+        let tmpdir_path = PathBuf::from(
+            path.as_os_str()
+                .to_str()
+                .expect("couldnt create os str from path")
+                .to_string()
+                + ".tmp",
+        );
+        fs::create_dir_all(&tmpdir_path)?;
+        let tmpdir_path2 = PathBuf::from(
+            path.as_os_str()
+                .to_str()
+                .expect("couldnt create os str from path")
+                .to_string()
+                + ".tmp2",
+        );
+        fs::create_dir_all(&tmpdir_path2)?;
+        Ok(Self {
             path,
+            tmpdir_path,
+            tmpdir_path2,
             phantom_key: PhantomData,
             phantom_val: PhantomData,
-        }
+        })
     }
 
+    // using to try to make sure that directory read is atomic
+    // TODO: not sure how read_dir works, need to figure that out
     fn get_files(&self) -> Result<Vec<PathBuf>> {
-        let canon = canonicalize(&self.path)?;
-        let par = canon.parent().ok_or(anyhow!("path doesnt have parent"))?;
-        println!("path: {:?}", &self.path);
-        let dir = read_dir(par)?.filter(|entry| match &entry {
-            Ok(d) => d
-                .path()
-                .to_str()
-                .unwrap()
-                .ends_with(self.path.file_name().unwrap().to_str().unwrap()),
-            Err(_) => false,
-        });
+        let dir = read_dir(&self.tmpdir_path)?;
         let mut v = Vec::new();
         for d in dir {
             let d = d?;
-            println!("entry: {:?}", d);
             v.push(d.path().to_path_buf());
         }
         Ok(v)
@@ -241,47 +265,17 @@ impl<K: Hash, V: Serialize + DeserializeOwned> Cache<K, V> {
         delete file lock
          */
 
-        let mut cache_file = if !self.path.exists() {
-            let mut f = File::create(&self.path)?;
-            write_u64(&mut f, 0u64)?;
-            f
-        } else {
-            OpenOptions::new().write(true).read(true).open(&self.path)?
-        };
-        if cache_file.metadata()?.len() == 0 {
-            write_u64(&mut cache_file, 0u64)?;
-        }
+        let cache_file = File::open(&self.path);
 
-        let canon = canonicalize(&self.path)?;
-        let par = canon
-            .parent()
-            .ok_or(anyhow!("couldnt get containing folder of cache file"))?;
+        let lock = cache_file?.try_lock_exclusive();
 
-        if cache_file.try_lock_exclusive().is_err() {
-            // locking failed
-            let (mut f, _) = NamedTempFile::with_suffix_in(
-                self.path
-                    .file_name()
-                    .ok_or(anyhow!("couldnt make file name"))?
-                    .to_str()
-                    .ok_or(anyhow!("couldnt create tmp file path"))?,
-                par,
-            )?
-            .keep()?;
+        if lock.is_ok() {
+            println!("locked {:?}", k);
+            println!(
+                "trying to lock exclusive {k:?}: {:?}",
+                File::open(&self.path)?.try_lock_exclusive()
+            );
 
-            write_u64(&mut f, 1u64)?;
-
-            let ind = Index {
-                hash,
-                offset: 40,
-                len: data.len(),
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-            };
-            ind.write_to_file(&mut f)?;
-
-            let buf = data.as_bytes();
-            ensure!(f.write(buf)? == data.len());
-        } else {
             // locking succeeded
 
             let mut cache = BTreeMap::new();
@@ -290,14 +284,19 @@ impl<K: Hash, V: Serialize + DeserializeOwned> Cache<K, V> {
 
             let dir = self.get_files()?;
 
-            for path in dir {
-                let mut c = read_from_file(&path)?;
-                cache.append(&mut c);
+            let mut c = read_from_file(&self.path)?;
+            cache.append(&mut c);
 
-                if path != *canon {
-                    remove_file(&path)?;
-                }
+            for path in &dir {
+                let mut c = read_from_file(path)?;
+                cache.append(&mut c);
             }
+
+            println!("created merge {k:?}");
+            println!(
+                "trying to lock exclusive {k:?}: {:?}",
+                File::open(&self.path)?.try_lock_exclusive()
+            );
 
             let k_hash = {
                 let mut hasher = DefaultHasher::new();
@@ -314,9 +313,54 @@ impl<K: Hash, V: Serialize + DeserializeOwned> Cache<K, V> {
                 v,
             );
 
-            cache_file.set_len(0)?;
-            cache_file.rewind()?;
-            write_to_file(&mut cache_file, &cache)?;
+            let named2 = NamedTempFile::new_in(&self.tmpdir_path2)?;
+            let tmpfile = named2.reopen()?;
+            let mut writer = BufWriter::new(tmpfile);
+            write_to_file(&mut writer, &cache)?;
+            println!("wrote to tmp {k:?}");
+            println!(
+                "trying to lock exclusive {k:?}: {:?}",
+                File::open(&self.path)?.try_lock_exclusive()
+            );
+
+            rename(named2, &self.path)?;
+
+            println!("renamed {k:?}");
+            println!(
+                "trying to lock exclusive {k:?}: {:?}",
+                File::open(&self.path)?.try_lock_exclusive()
+            );
+
+            for path in &dir {
+                remove_file(path).ok(); // its fine if the file was already deleted
+            }
+
+            println!("removed all files {k:?}");
+            println!(
+                "trying to lock exclusive {k:?}: {:?}",
+                File::open(&self.path)?.try_lock_exclusive()
+            );
+        } else {
+            // locking failed - need to create temporary file
+            let (f, fname2) = NamedTempFile::new_in(&self.tmpdir_path2)?.keep()?;
+            let mut bufwriter = BufWriter::new(f);
+
+            write_u64(&mut bufwriter, 1u64)?;
+
+            let ind = Index {
+                hash,
+                offset: 40,
+                len: data.len(),
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            };
+            ind.write_to_file(&mut bufwriter)?;
+
+            let buf = data.as_bytes();
+            ensure!(bufwriter.write(buf)? == data.len());
+            drop(bufwriter);
+
+            let fname = NamedTempFile::new_in(&self.tmpdir_path)?.keep()?;
+            rename(fname2, fname.1)?;
         }
 
         Ok(())
@@ -356,7 +400,6 @@ impl<K: Hash, V: Serialize + DeserializeOwned> Cache<K, V> {
         let dir = self.get_files()?;
 
         for path in dir {
-            println!("dir: {path:?}");
             let mut c = read_from_file(&path)?;
             cache.append(&mut c);
         }
