@@ -2,8 +2,8 @@ use pccache::Cache;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 fn main() -> anyhow::Result<()> {
-    let mut cache = Cache::new("cache.db")?;
-    // println!("created");
+    let mut cache: Cache<i32, i32> = Cache::new("cache.db")?;
+    println!("created");
     // cache.insert(4, 8)?;
     // cache.insert(5, 10)?;
     // cache.insert(6, 12)?;
@@ -21,18 +21,16 @@ fn main() -> anyhow::Result<()> {
     // println!("{:?}", cache.get(7)?);
 
     (0..20).into_par_iter().for_each(|e| {
-        cache
-            .clone()
-            .insert(e, e * 10)
-            .expect(format!("couldnt insert {e}").as_str());
+        let s = format!("couldnt insert {e}");
+        cache.clone().insert(e, e * 10).expect(&s);
     });
 
     let mut c = cache
         .collect()?
         .into_iter()
-        .map(|e| (e.0.hash, e.1))
+        .map(|e| e.1)
         .collect::<Vec<_>>();
-    c.sort_by(|a, b| a.1.cmp(&b.1));
+    c.sort();
 
     println!("{c:?}");
 
